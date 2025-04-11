@@ -66,10 +66,16 @@ func TestEdgeCenterProvider_Records(t *testing.T) {
 		Name: "example.com",
 		Records: []dnssdk.ZoneRecord{
 			{
-				Name:         "test",
+				Name:         "test.example.com",
 				Type:         "A",
 				TTL:          3600,
 				ShortAnswers: []string{"192.0.2.1"},
+			},
+			{
+				Name:         "@",
+				Type:         "A",
+				TTL:          3600,
+				ShortAnswers: []string{"192.0.2.2"},
 			},
 		},
 	}, nil)
@@ -79,11 +85,19 @@ func TestEdgeCenterProvider_Records(t *testing.T) {
 
 	// Проверка
 	assert.NoError(t, err)
-	assert.Len(t, records, 1)
+	assert.Len(t, records, 2)
+
+	// Проверяем запись поддомена
 	assert.Equal(t, "test.example.com.", records[0].DNSName)
 	assert.Equal(t, "A", records[0].RecordType)
 	assert.Equal(t, endpoint.Targets{"192.0.2.1"}, records[0].Targets)
 	assert.Equal(t, endpoint.TTL(3600), records[0].RecordTTL)
+
+	// Проверяем корневую запись зоны
+	assert.Equal(t, "example.com.", records[1].DNSName)
+	assert.Equal(t, "A", records[1].RecordType)
+	assert.Equal(t, endpoint.Targets{"192.0.2.2"}, records[1].Targets)
+	assert.Equal(t, endpoint.TTL(3600), records[1].RecordTTL)
 
 	mockClient.AssertExpectations(t)
 }
@@ -116,7 +130,7 @@ func TestEdgeCenterProvider_ApplyChanges(t *testing.T) {
 	}
 
 	// Настройка мока для AddZoneRRSet
-	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "test", "A", mock.Anything, 3600, mock.Anything).Return(nil)
+	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "test.example.com", "A", mock.Anything, 3600, mock.Anything).Return(nil)
 
 	// Действие
 	err = provider.ApplyChanges(context.Background(), changes)
@@ -183,7 +197,13 @@ func TestEdgeCenterProvider_getZoneAndRecordName(t *testing.T) {
 			name:           "Valid DNS name",
 			dnsName:        "test.example.com.",
 			expectedZone:   "example.com",
-			expectedRecord: "test",
+			expectedRecord: "test.example.com",
+		},
+		{
+			name:           "Root zone record",
+			dnsName:        "example.com.",
+			expectedZone:   "example.com",
+			expectedRecord: "@",
 		},
 		{
 			name:           "Invalid DNS name",

@@ -29,7 +29,7 @@ func main() {
 
 	baseURL := os.Getenv("EDGECENTER_BASE_URL")
 	if baseURL == "" {
-		baseURL = "https://api.edgecenter.ru/dns/v1"
+		baseURL = "https://api.edgecenter.ru/dns"
 	}
 
 	parsedURL, err := url.Parse(baseURL)

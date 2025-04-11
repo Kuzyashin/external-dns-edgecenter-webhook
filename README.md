@@ -163,11 +163,7 @@ resource "kubernetes_deployment" "webhook" {
             value = var.dry_run
           }
           env {
-            name  = "ANNOTATION_FILTER"
-            value = var.annotation_filter
-          }
-          env {
-            name = "EDGECENTER_TOKEN"
+            name = "EDGECENTER_API_KEY"
             value_from {
               secret_key_ref {
                 # Укажите имя секрета, созданного вручную или через ExternalSecret
@@ -241,6 +237,110 @@ resource "kubernetes_service" "webhook" {
     type = "ClusterIP"
   }
 }
+
+resource "kubernetes_deployment" "external_dns_edgecenter" {
+  metadata {
+    name      = "external-dns-edgecenter"
+    namespace = var.namespace
+    labels = {
+      app = "external-dns-edgecenter"
+    }
+  }
+  spec {
+    replicas = 1 # Можно сделать переменной
+    selector {
+      match_labels = {
+        app = "external-dns-edgecenter"
+      }
+    }
+    template {
+      metadata {
+        labels = {
+          app = "external-dns-edgecenter"
+        }
+      }
+      spec {
+        service_account_name = kubernetes_service_account.external_dns.metadata.0.name # Используем созданный SA
+        container {
+          name  = "external-dns"
+          image = "registry.k8s.io/external-dns/external-dns:v0.13.0"
+          args = [
+            "--source=service",
+            "--source=ingress",
+            "--provider=webhook",
+            "--webhook-provider-url=http://external-dns-edgecenter-webhook:8888", # Адрес сервиса нашего webhook
+            "--annotation-filter=external-dns.alpha.kubernetes.io/target-provider=edgecenter",
+            "--registry=txt",
+            "--txt-owner-id=external-dns-edgecenter",
+            "--request-timeout=2m", # Увеличенный таймаут для запросов к API
+            "--no-nodes"            # Отключение синхронизации Node-ресурсов
+          ]
+          # Добавьте ресурсы и пробы по необходимости
+        }
+      }
+    }
+  }
+}
+
+resource "kubernetes_deployment" "external_dns_yandex" {
+  metadata {
+    name      = "external-dns-yandex"
+    namespace = var.namespace
+    labels = {
+      app = "external-dns-yandex"
+    }
+  }
+  spec {
+    replicas = 1 # Можно сделать переменной
+    selector {
+      match_labels = {
+        app = "external-dns-yandex"
+      }
+    }
+    template {
+      metadata {
+        labels = {
+          app = "external-dns-yandex"
+        }
+      }
+      spec {
+        service_account_name = kubernetes_service_account.external_dns.metadata.0.name # Используем созданный SA
+        container {
+          name  = "external-dns"
+          image = "registry.k8s.io/external-dns/external-dns:v0.13.0"
+          args = [
+            "--source=service",
+            "--source=ingress",
+            "--provider=yandex",
+            "--registry=txt",
+            "--txt-owner-id=external-dns-yandex",
+            "--request-timeout=2m", # Увеличенный таймаут для запросов к API
+            "--no-nodes"            # Отключение синхронизации Node-ресурсов
+          ]
+          env {
+            name = "YANDEX_CLOUD_FOLDER_ID"
+            value_from {
+              secret_key_ref {
+                name = "yandex-dns-credentials"
+                key  = "folder-id"
+              }
+            }
+          }
+          env {
+            name = "YANDEX_CLOUD_TOKEN"
+            value_from {
+              secret_key_ref {
+                name = "yandex-dns-credentials"
+                key  = "token"
+              }
+            }
+          }
+          # Добавьте ресурсы и пробы по необходимости
+        }
+      }
+    }
+  }
+}
 ```
 
 ### Применение конфигурации
@@ -258,8 +358,7 @@ terraform apply
 | Переменная        | Terraform переменная | Описание                                                | Значение по умолчанию                                         |
 |-------------------|----------------------|---------------------------------------------------------|---------------------------------------------------------------|
 | `DRY_RUN`         | `dry_run`            | Включить режим dry-run (без внесения изменений в DNS) | `false`                                                       |
-| `ANNOTATION_FILTER` | `annotation_filter`  | Фильтр по аннотациям для ExternalDNS                    | `external-dns.alpha.kubernetes.io/target-provider=edgecenter` |
-| `EDGECENTER_TOKEN`| (из секрета)         | Токен доступа к API EdgeCenter                           | -                                                             |
+| `EDGECENTER_API_KEY`| (из секрета)         | Токен доступа к API EdgeCenter                           | -                                                             |
 | `PORT`            | (в коде)             | Порт, на котором слушает webhook сервер               | `8080`                                                        |
 | `LOG_LEVEL`       | (в коде)             | Уровень логирования (debug, info, warn, error)        | `info`                                                        |
 
@@ -272,6 +371,57 @@ terraform apply
 1.  **ExternalDNS для EdgeCenter:** Настроен на использование webhook-провайдера и фильтрует ресурсы по аннотации `external-dns.alpha.kubernetes.io/target-provider=edgecenter`.
 2.  **ExternalDNS для Yandex:** Настроен на использование Yandex-провайдера и *не* использует фильтр по аннотациям (обрабатывает все остальные ресурсы).
 
+### Настройка RBAC для ExternalDNS (Terraform)
+
+ExternalDNS требует прав на чтение Services, Ingresses, Endpoints, Pods и Nodes в кластере. Создайте необходимые RBAC ресурсы:
+
+```terraform
+resource "kubernetes_service_account" "external_dns" {
+  metadata {
+    name      = "external-dns"
+    namespace = var.namespace
+    # Можно добавить аннотации для IAM-ролей (например, для AWS IRSA или GCP Workload Identity)
+    # annotations = {
+    #   "eks.amazonaws.com/role-arn" = "arn:aws:iam::ACCOUNT_ID:role/external-dns"
+    # }
+  }
+}
+
+resource "kubernetes_cluster_role" "external_dns" {
+  metadata {
+    name = "external-dns"
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["services", "endpoints", "pods", "nodes"]
+    verbs      = ["get", "watch", "list"]
+  }
+
+  rule {
+    api_groups = ["extensions", "networking.k8s.io"]
+    resources  = ["ingresses"]
+    verbs      = ["get", "watch", "list"]
+  }
+}
+
+resource "kubernetes_cluster_role_binding" "external_dns" {
+  metadata {
+    name = "external-dns"
+  }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = kubernetes_cluster_role.external_dns.metadata.0.name
+  }
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account.external_dns.metadata.0.name
+    namespace = var.namespace
+  }
+}
+```
+
 ### Настройка ExternalDNS для EdgeCenter (через Terraform)
 
 ```terraform
@@ -279,11 +429,25 @@ resource "kubernetes_deployment" "external_dns_edgecenter" {
   metadata {
     name      = "external-dns-edgecenter"
     namespace = var.namespace
+    labels = {
+      app = "external-dns-edgecenter"
+    }
   }
   spec {
+    replicas = 1 # Можно сделать переменной
+    selector {
+      match_labels = {
+        app = "external-dns-edgecenter"
+      }
+    }
     template {
+      metadata {
+        labels = {
+          app = "external-dns-edgecenter"
+        }
+      }
       spec {
-        service_account_name = "external-dns" # Убедитесь, что Service Account существует и имеет права
+        service_account_name = kubernetes_service_account.external_dns.metadata.0.name # Используем созданный SA
         container {
           name  = "external-dns"
           image = "registry.k8s.io/external-dns/external-dns:v0.13.0"
@@ -294,7 +458,9 @@ resource "kubernetes_deployment" "external_dns_edgecenter" {
             "--webhook-provider-url=http://external-dns-edgecenter-webhook:8888", # Адрес сервиса нашего webhook
             "--annotation-filter=external-dns.alpha.kubernetes.io/target-provider=edgecenter",
             "--registry=txt",
-            "--txt-owner-id=external-dns-edgecenter"
+            "--txt-owner-id=external-dns-edgecenter",
+            "--request-timeout=2m", # Увеличенный таймаут для запросов к API
+            "--no-nodes"            # Отключение синхронизации Node-ресурсов
           ]
           # Добавьте ресурсы и пробы по необходимости
         }
@@ -313,11 +479,25 @@ resource "kubernetes_deployment" "external_dns_yandex" {
   metadata {
     name      = "external-dns-yandex"
     namespace = var.namespace
+    labels = {
+      app = "external-dns-yandex"
+    }
   }
   spec {
+    replicas = 1 # Можно сделать переменной
+    selector {
+      match_labels = {
+        app = "external-dns-yandex"
+      }
+    }
     template {
+      metadata {
+        labels = {
+          app = "external-dns-yandex"
+        }
+      }
       spec {
-        service_account_name = "external-dns" # Убедитесь, что Service Account существует и имеет права
+        service_account_name = kubernetes_service_account.external_dns.metadata.0.name # Используем созданный SA
         container {
           name  = "external-dns"
           image = "registry.k8s.io/external-dns/external-dns:v0.13.0"
@@ -326,7 +506,9 @@ resource "kubernetes_deployment" "external_dns_yandex" {
             "--source=ingress",
             "--provider=yandex",
             "--registry=txt",
-            "--txt-owner-id=external-dns-yandex"
+            "--txt-owner-id=external-dns-yandex",
+            "--request-timeout=2m", # Увеличенный таймаут для запросов к API
+            "--no-nodes"            # Отключение синхронизации Node-ресурсов
           ]
           env {
             name = "YANDEX_CLOUD_FOLDER_ID"
@@ -393,6 +575,176 @@ spec:
 # ... (Примеры с Ingress аналогичны)
 ```
 
+### Примеры YAML-манифестов для тестирования
+
+#### 1. Тестовое приложение Nginx с сервисом и двумя ingress (EdgeCenter и Yandex)
+
+```yaml
+---
+# Deployment для тестового приложения
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-test
+  namespace: external-dns
+spec:
+  selector:
+    matchLabels:
+      app: nginx-test
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: nginx-test
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: 10m
+            memory: 20Mi
+          limits:
+            cpu: 100m
+            memory: 100Mi
+
+---
+# Service для тестового приложения
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-test
+  namespace: external-dns
+spec:
+  ports:
+  - port: 80
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    app: nginx-test
+
+---
+# Ingress для EdgeCenter DNS
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-test-edgecenter
+  namespace: external-dns
+  annotations:
+    external-dns.alpha.kubernetes.io/target-provider: edgecenter
+    kubernetes.io/ingress.class: nginx
+    # Опциональные аннотации для NGINX Ingress Controller
+    # nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  rules:
+  - host: nginx-edge.test.example.com  # Замените на ваш домен
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-test
+            port:
+              name: http
+
+---
+# Ingress для Yandex DNS (без аннотации target-provider)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx-test-yandex
+  namespace: external-dns
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    # Опциональные аннотации для NGINX Ingress Controller
+    # nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  rules:
+  - host: nginx-yandex.test.example.ru  # Замените на ваш домен
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-test
+            port:
+              name: http
+```
+
+#### 2. Тестовое приложение с TLS (HTTPS)
+
+```yaml
+---
+# Deployment и Service аналогичны предыдущему примеру
+# Секрет с TLS-сертификатом (замените на ваши данные)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls-secret-test
+  namespace: external-dns
+type: kubernetes.io/tls
+data:
+  # Замените на ваши закодированные в base64 сертификат и ключ
+  tls.crt: LS0tLS1CRUdJTi...
+  tls.key: LS0tLS1CRUdJTi...
+
+---
+# Ingress с TLS для EdgeCenter DNS
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tls-test-edgecenter
+  namespace: external-dns
+  annotations:
+    external-dns.alpha.kubernetes.io/target-provider: edgecenter
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+  - hosts:
+    - secure-edge.test.example.com
+    secretName: tls-secret-test
+  rules:
+  - host: secure-edge.test.example.com  # Замените на ваш домен
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-test
+            port:
+              name: http
+```
+
+#### 3. Команды для применения и проверки
+
+```bash
+# Применение манифестов
+kubectl apply -f test-manifests.yaml
+
+# Проверка созданных ресурсов
+kubectl get deploy,svc,ing -n external-dns
+
+# Проверка логов EdgeCenter ExternalDNS
+kubectl logs -f deployment/external-dns-edgecenter -n external-dns
+
+# Проверка логов Yandex ExternalDNS
+kubectl logs -f deployment/external-dns-yandex -n external-dns
+
+# Проверка логов EdgeCenter Webhook
+kubectl logs -f deployment/external-dns-edgecenter-webhook -n external-dns
+```
+
+После создания ресурсов, ExternalDNS должен обнаружить новые Ingress и создать соответствующие DNS-записи в EdgeCenter DNS и Yandex DNS.
+
 ### Принцип работы
 
 1.  **EdgeCenter ExternalDNS:**
@@ -448,6 +800,7 @@ yc dns zone list-records --name=$ZONE_NAME
 3.  При переключении провайдера для существующей записи может потребоваться ручное удаление старой записи.
 4.  Возможны задержки при обновлении DNS-записей из-за кэширования DNS и TTL.
 5.  При использовании режима `dryRun=true` записи не будут созданы, но в логах вы увидите, какие изменения были бы применены.
+
 
 ### Устранение неполадок
 

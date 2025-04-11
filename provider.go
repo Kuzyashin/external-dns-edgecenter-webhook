@@ -79,13 +79,10 @@ func (p *EdgeCenterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint,
 			name := record.Name
 			if name == "@" {
 				name = zone.Name
-			} else {
-				name = fmt.Sprintf("%s.%s", name, zone.Name)
 			}
 			if !strings.HasSuffix(name, ".") {
 				name = name + "."
 			}
-			p.logger.Debug("Creating endpoint", zap.String("name", name))
 
 			ep := endpoint.NewEndpoint(
 				name,
@@ -94,7 +91,12 @@ func (p *EdgeCenterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint,
 			)
 			ep.RecordTTL = endpoint.TTL(record.TTL)
 			ep.DNSName = name
-			p.logger.Debug("Created endpoint", zap.String("name", name), zap.String("dnsName", ep.DNSName))
+			p.logger.Debug("Created endpoint",
+				zap.String("zone", zone.Name),
+				zap.String("record", record.Name),
+				zap.String("fullName", name),
+				zap.String("type", record.Type),
+				zap.Strings("answers", record.ShortAnswers))
 			endpoints = append(endpoints, ep)
 		}
 	}
@@ -138,6 +140,14 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 				zap.Int("ttl", ttl))
 			continue
 		}
+
+		p.logger.Debug("Creating DNS record",
+			zap.String("original_name", change.DNSName),
+			zap.String("zone", zoneName),
+			zap.String("record", recordName),
+			zap.String("type", change.RecordType),
+			zap.Any("content", content.ToContent()),
+			zap.Int("ttl", ttl))
 
 		err := p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, []dnssdk.ResourceRecord{
 			{Content: content.ToContent()},
@@ -224,7 +234,8 @@ func (p *EdgeCenterProvider) getZoneAndRecordName(dnsName string, zoneNameMap ma
 	longestLength := 0
 
 	for zoneName := range zoneNameMap {
-		if strings.HasSuffix(dnsName, "."+zoneName+".") {
+		zoneWithDot := zoneName + "."
+		if strings.HasSuffix(dnsName, zoneWithDot) {
 			if len(zoneName) > longestLength {
 				longestMatch = zoneName
 				longestLength = len(zoneName)
@@ -236,6 +247,11 @@ func (p *EdgeCenterProvider) getZoneAndRecordName(dnsName string, zoneNameMap ma
 		return "", ""
 	}
 
-	recordName := strings.TrimSuffix(dnsName, "."+longestMatch+".")
+	recordName := strings.TrimSuffix(dnsName, ".")
+
+	if recordName == longestMatch {
+		return longestMatch, "@"
+	}
+
 	return longestMatch, recordName
 }
