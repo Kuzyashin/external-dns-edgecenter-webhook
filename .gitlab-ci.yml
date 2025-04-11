@@ -1,6 +1,6 @@
 include:
   - project: 'infrastructure/shared-workflows'
-    ref: v0.0.35
+    ref: v0.0.76
     file: '/workflows/build/docker-build.yml'
 
 variables:
