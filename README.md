@@ -7,367 +7,351 @@
 - Полная поддержка API ExternalDNS Webhook
 - Управление DNS-записями в EdgeCenter DNS
 - Поддержка всех типов DNS-записей
-- Фильтрация по доменам
-- Интеграция с External Secrets Operator для безопасного управления секретами
-- Режим dry-run для безопасной отладки изменений
-- Helm chart для простого развертывания в Kubernetes
+- Режим dry-run для безопасной отладки изменений DNS
+- Фильтрация по аннотациям для работы с несколькими экземплярами ExternalDNS
+- Интеграция с External Secrets Operator для безопасного управления секретами (опционально)
 
 ## Требования
 
-- Go 1.19 или выше
+- Go 1.19 или выше (для сборки)
+- Docker (для сборки образа)
 - Kubernetes 1.16 или выше
 - ExternalDNS v0.13.0 или выше
-- External Secrets Operator v0.9.0 или выше
 - Доступ к API EdgeCenter DNS
+- Terraform v1.0 или выше (для развертывания)
+- Kubectl
 
-## Установка
+## Сборка Docker-образа
+
+```bash
+# Склонируйте репозиторий
+git clone https://viory.gitlab.yandexcloud.net/viory/external-dns-edgecenter-webhook.git
+cd external-dns-edgecenter-webhook
+
+# Соберите Docker-образ
+# Замените <your-registry> и <tag> на свои значения
+docker build -t <your-registry>/external-dns-edgecenter-webhook:<tag> .
+
+# Загрузите образ в ваш Docker-репозиторий
+docker push <your-registry>/external-dns-edgecenter-webhook:<tag>
+```
+
+## Развертывание с помощью Terraform
 
 ### Предварительные требования
 
-1. Установите External Secrets Operator:
+1.  Убедитесь, что у вас настроен Terraform и провайдер Kubernetes.
+2.  Создайте секрет Kubernetes для токена EdgeCenter.
+
+    **Способ 1: Обычный секрет Kubernetes**
+
+    ```bash
+    kubectl create secret generic edgecenter-credentials \
+      --from-literal=token='YOUR_EDGECENTER_API_TOKEN' \
+      --namespace external-dns # Укажите ваш namespace
+    ```
+
+    **Способ 2: Интеграция с External Secrets Operator**
+
+    Если вы используете External Secrets Operator, настройте `ExternalSecret`:
+
+    ```terraform
+    resource "kubernetes_manifest" "external_secret_edgecenter" {
+      manifest = {
+        "apiVersion" = "external-secrets.io/v1beta1"
+        "kind"       = "ExternalSecret"
+        "metadata" = {
+          "name"      = "edgecenter-webhook-secret"
+          "namespace" = var.namespace # Ваш namespace
+        }
+        "spec" = {
+          "refreshInterval" = "1h"
+          "secretStoreRef" = {
+            "name" = "vault-backend" # Имя вашего SecretStore
+            "kind" = "ClusterSecretStore"
+          }
+          "target" = {
+            "name" = "edgecenter-webhook-secret" # Имя секрета Kubernetes, который будет создан
+          }
+          "data" = [
+            {
+              "secretKey" = "token"
+              "remoteRef" = {
+                "key"      = "external-dns/edgecenter" # Путь к секрету в вашем хранилище
+                "property" = "token"                   # Имя поля в секрете
+              }
+            }
+          ]
+        }
+      }
+    }
+    ```
+
+### Пример Terraform конфигурации
+
+```terraform
+variable "namespace" {
+  description = "Namespace for deployment"
+  default     = "external-dns"
+}
+
+variable "webhook_image" {
+  description = "Docker image for the webhook"
+  default     = "cr.yandex/crpminendqjcho56q23n/external-dns-edgecenter-webhook:build.593-branch.master" # Укажите ваш образ!
+}
+
+variable "dry_run" {
+  description = "Enable dry-run mode"
+  type        = bool
+  default     = false
+}
+
+variable "annotation_filter" {
+  description = "Annotation filter for ExternalDNS"
+  default     = "external-dns.alpha.kubernetes.io/target-provider=edgecenter"
+}
+
+variable "webhook_replicas" {
+  description = "Number of webhook replicas"
+  default     = 1
+}
+
+provider "kubernetes" {
+  # Конфигурация вашего Kubernetes провайдера
+}
+
+resource "kubernetes_deployment" "webhook" {
+  metadata {
+    name      = "external-dns-edgecenter-webhook"
+    namespace = var.namespace
+    labels = {
+      app = "external-dns-edgecenter-webhook"
+    }
+  }
+
+  spec {
+    replicas = var.webhook_replicas
+
+    selector {
+      match_labels = {
+        app = "external-dns-edgecenter-webhook"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app = "external-dns-edgecenter-webhook"
+        }
+      }
+
+      spec {
+        service_account_name = "default" # Укажите ваш Service Account, если нужно
+
+        container {
+          name  = "webhook"
+          image = var.webhook_image
+          image_pull_policy = "IfNotPresent"
+
+          port {
+            container_port = 8080
+            name           = "http"
+          }
+
+          env {
+            name  = "DRY_RUN"
+            value = var.dry_run
+          }
+          env {
+            name  = "ANNOTATION_FILTER"
+            value = var.annotation_filter
+          }
+          env {
+            name = "EDGECENTER_TOKEN"
+            value_from {
+              secret_key_ref {
+                # Укажите имя секрета, созданного вручную или через ExternalSecret
+                name = "edgecenter-webhook-secret" # или "edgecenter-credentials"
+                key  = "token"
+              }
+            }
+          }
+
+          liveness_probe {
+            http_get {
+              path = "/health"
+              port = "http"
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+          }
+
+          readiness_probe {
+            http_get {
+              path = "/health"
+              port = "http"
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 5
+          }
+
+          resources {
+            requests = {
+              cpu    = "10m"
+              memory = "64Mi"
+            }
+            limits = {
+              cpu    = "100m"
+              memory = "128Mi"
+            }
+          }
+
+          security_context {
+            read_only_root_filesystem = true
+            run_as_non_root           = true
+            run_as_user               = 1000
+            capabilities {
+              drop = ["ALL"]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+resource "kubernetes_service" "webhook" {
+  metadata {
+    name      = "external-dns-edgecenter-webhook"
+    namespace = var.namespace
+    labels = {
+      app = "external-dns-edgecenter-webhook"
+    }
+  }
+  spec {
+    selector = {
+      app = "external-dns-edgecenter-webhook"
+    }
+    port {
+      port        = 8888 # Порт, который слушает ExternalDNS
+      target_port = "http" # Имя порта в Deployment
+      protocol    = "TCP"
+      name        = "http"
+    }
+    type = "ClusterIP"
+  }
+}
+```
+
+### Применение конфигурации
+
 ```bash
-helm repo add external-secrets https://charts.external-secrets.io
-helm install external-secrets external-secrets/external-secrets \
-  --namespace external-secrets \
-  --create-namespace
+terraform init
+terraform plan
+terraform apply
 ```
-
-2. Настройте SecretStore или ClusterSecretStore для вашего хранилища секретов (например, HashiCorp Vault):
-```yaml
-apiVersion: external-secrets.io/v1beta1
-kind: ClusterSecretStore
-metadata:
-  name: vault-backend
-spec:
-  provider:
-    vault:
-      server: "https://vault.example.com"
-      path: "secret"
-      version: "v2"
-      auth:
-        kubernetes:
-          mountPath: "kubernetes"
-          role: "external-secrets"
-          serviceAccountRef:
-            name: "external-secrets"
-            namespace: "external-secrets"
-```
-
-### Установка чарта
-
-```bash
-# Добавляем репозиторий Helm
-helm repo add external-dns-edgecenter-webhook https://example.com/charts
-helm repo update
-
-# Устанавливаем chart
-helm install external-dns-edgecenter-webhook \
-  --namespace external-dns \
-  --set externalSecrets.secretStore.name=vault-backend \
-  --set externalSecrets.remoteRef.key=external-dns/edgecenter \
-  external-dns-edgecenter-webhook/external-dns-edgecenter-webhook
-```
-
-### Конфигурация External Secrets
-
-Для работы с External Secrets необходимо:
-
-1. Создать секрет в вашем хранилище (например, в Vault):
-```bash
-vault kv put secret/external-dns/edgecenter \
-  token=your-edgecenter-api-token
-```
-
-2. Убедиться, что External Secrets Operator имеет доступ к этому секрету.
 
 ## Конфигурация
 
-### Основные параметры
+Основные параметры управляются через переменные окружения в манифесте Deployment:
 
-| Параметр | Описание | Значение по умолчанию |
-|----------|-----------|----------------------|
-| `image.repository` | Репозиторий образа | `ghcr.io/your-org/external-dns-edgecenter-webhook` |
-| `image.tag` | Тег образа | `""` (использует appVersion) |
-| `image.pullPolicy` | Политика загрузки образа | `IfNotPresent` |
-| `replicaCount` | Количество реплик | `1` |
-| `dryRun` | Режим dry-run для отладки | `false` |
-| `annotationFilter` | Фильтр по аннотациям для ExternalDNS | `external-dns.alpha.kubernetes.io/target-provider=edgecenter` |
-
-### Режим Dry-Run
-
-Режим dry-run позволяет безопасно тестировать изменения DNS без фактического применения их в EdgeCenter DNS. В этом режиме все операции только логируются, но не выполняются.
-
-Для включения режима dry-run:
-
-```bash
-helm install external-dns-edgecenter-webhook \
-  --namespace external-dns \
-  --set dryRun=true \
-  external-dns-edgecenter-webhook/external-dns-edgecenter-webhook
-```
-
-В логах вы увидите, какие изменения были бы применены:
-```
-INFO would create record {"zone": "example.com", "record": "test", "type": "A", "content": "192.0.2.1", "ttl": 3600}
-INFO would update record {"zone": "example.com", "record": "www", "type": "CNAME", "targets": ["example.com"], "ttl": 3600}
-INFO would delete record {"zone": "example.com", "record": "old", "type": "A"}
-```
-
-### External Secrets
-
-| Параметр | Описание | Значение по умолчанию |
-|----------|-----------|----------------------|
-| `externalSecrets.enabled` | Включить External Secrets | `true` |
-| `externalSecrets.refreshInterval` | Интервал обновления секрета | `1h` |
-| `externalSecrets.secretStore.name` | Имя SecretStore | `vault-backend` |
-| `externalSecrets.secretStore.kind` | Тип хранилища | `ClusterSecretStore` |
-| `externalSecrets.remoteRef.key` | Путь к секрету | `external-dns/edgecenter` |
-| `externalSecrets.remoteRef.property` | Имя поля в секрете | `token` |
-
-## Безопасность
-
-Для обеспечения безопасности:
-
-1. Используйте External Secrets для управления токеном EdgeCenter
-2. Включите режим dry-run при первом развертывании или тестировании изменений
-3. Ограничьте доступ к API EdgeCenter с помощью RBAC
-4. Регулярно обновляйте токен EdgeCenter
-
-## Поддержка
-
-При возникновении проблем:
-
-1. Проверьте логи с помощью `kubectl logs`
-2. Включите режим dry-run для отладки изменений
-3. Создайте issue в репозитории проекта
-
-## Лицензия
-
-MIT License
-
-## Использование с ExternalDNS
-
-1. Установите webhook провайдер:
-```bash
-# Обычная установка
-helm install external-dns-edgecenter-webhook ...
-
-# Установка в режиме dry-run для отладки
-helm install external-dns-edgecenter-webhook \
-  --namespace external-dns \
-  --set dryRun=true \
-  external-dns-edgecenter-webhook/external-dns-edgecenter-webhook
-```
-
-2. Настройте ExternalDNS для использования webhook провайдера:
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: external-dns
-spec:
-  template:
-    spec:
-      containers:
-      - name: external-dns
-        image: registry.k8s.io/external-dns/external-dns:v0.13.0
-        args:
-        - --source=service
-        - --source=ingress
-        - --provider=webhook
-        - --webhook-provider-url=http://external-dns-edgecenter-webhook:8888
-        - --domain-filter=example.com
-```
-
-## Примеры
-
-### Создание DNS-записи через Service
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx
-  annotations:
-    external-dns.alpha.kubernetes.io/hostname: nginx.example.com
-spec:
-  type: LoadBalancer
-  ports:
-  - port: 80
-  selector:
-    app: nginx
-```
-
-### Создание DNS-записи через Ingress
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: nginx
-spec:
-  rules:
-  - host: nginx.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: nginx
-            port:
-              number: 80
-```
-
-## API
-
-Webhook реализует следующие эндпоинты в соответствии со спецификацией ExternalDNS Webhook API v0.15.0:
-
-- `GET /` - Инициализация и согласование заголовков, возвращает фильтры доменов
-  - Ответ: Список доменов, которые обслуживает DNS-провайдер
-  - Формат: `application/external.dns.webhook+json;version=1`
-
-- `GET /records` - Получение текущих DNS-записей
-  - Ответ: Список текущих DNS-записей с их параметрами (имя, TTL, тип, цели)
-  - Формат: `application/external.dns.webhook+json;version=1`
-
-- `POST /records` - Применение изменений DNS-записей
-  - Тело запроса: Список изменений (создание, удаление, обновление записей)
-  - Формат: `application/external.dns.webhook+json;version=1`
-  - Структура изменений:
-    - `create`: Записи для создания
-    - `delete`: Записи для удаления
-    - `updateOld`: Старые версии записей для обновления
-    - `updateNew`: Новые версии записей для обновления
-
-- `POST /adjustendpoints` - Корректировка эндпоинтов
-  - Тело запроса: Список записей для корректировки
-  - Ответ: Скорректированный список записей
-  - Формат: `application/external.dns.webhook+json;version=1`
-
-Поддерживаемые типы DNS-записей:
-- A
-- CNAME
-- TXT
-- и другие стандартные типы DNS-записей
-
-Каждая DNS-запись может содержать:
-- `dnsName`: Имя записи (например, "test.example.com")
-- `recordType`: Тип записи (A, CNAME, etc.)
-- `recordTTL`: Время жизни записи в секундах
-- `targets`: Массив целевых значений (IP-адреса для A-записей, имена для CNAME и т.д.)
-- `setIdentifier`: Опциональный идентификатор для записи
-- `labels`: Дополнительные метки в формате ключ-значение
-- `providerSpecific`: Специфичные для провайдера параметры
-
-Подробная спецификация API доступна в [docs/api/webhook.yaml](docs/api/webhook.yaml).
-
-## Разработка
-
-```bash
-# Запуск тестов
-go test -v ./...
-
-# Сборка
-go build
-
-# Запуск с отладкой
-LOG_LEVEL=debug ./external-dns-edgecenter-webhook
-
-# Запуск в режиме dry-run для отладки
-LOG_LEVEL=debug DRY_RUN=true ./external-dns-edgecenter-webhook
-```
+| Переменная        | Terraform переменная | Описание                                                | Значение по умолчанию                                         |
+|-------------------|----------------------|---------------------------------------------------------|---------------------------------------------------------------|
+| `DRY_RUN`         | `dry_run`            | Включить режим dry-run (без внесения изменений в DNS) | `false`                                                       |
+| `ANNOTATION_FILTER` | `annotation_filter`  | Фильтр по аннотациям для ExternalDNS                    | `external-dns.alpha.kubernetes.io/target-provider=edgecenter` |
+| `EDGECENTER_TOKEN`| (из секрета)         | Токен доступа к API EdgeCenter                           | -                                                             |
+| `PORT`            | (в коде)             | Порт, на котором слушает webhook сервер               | `8080`                                                        |
+| `LOG_LEVEL`       | (в коде)             | Уровень логирования (debug, info, warn, error)        | `info`                                                        |
 
 ## Использование с несколькими DNS-провайдерами
 
 ### Общее описание
 
-Если в вашем кластере уже работает ExternalDNS с другим провайдером (например, Yandex DNS), вы можете настроить работу обоих провайдеров одновременно. Для этого нужно:
+Если в вашем кластере уже работает ExternalDNS с другим провайдером (например, Yandex DNS), вы можете настроить работу обоих провайдеров одновременно. Для этого нужно развернуть два экземпляра ExternalDNS:
 
-1. Установить EdgeCenter Webhook провайдер
-2. Настроить два экземпляра ExternalDNS:
-   - Один для EdgeCenter DNS (с фильтром по аннотациям)
-   - Один для Yandex DNS (без фильтра, будет обрабатывать все остальные записи)
+1.  **ExternalDNS для EdgeCenter:** Настроен на использование webhook-провайдера и фильтрует ресурсы по аннотации `external-dns.alpha.kubernetes.io/target-provider=edgecenter`.
+2.  **ExternalDNS для Yandex:** Настроен на использование Yandex-провайдера и *не* использует фильтр по аннотациям (обрабатывает все остальные ресурсы).
 
-### Установка EdgeCenter Webhook
+### Настройка ExternalDNS для EdgeCenter (через Terraform)
 
-```bash
-helm install external-dns-edgecenter-webhook \
-  --namespace external-dns \
-  --set externalSecrets.secretStore.name=vault-backend \
-  --set externalSecrets.remoteRef.key=external-dns/edgecenter \
-  external-dns-edgecenter-webhook/external-dns-edgecenter-webhook
+```terraform
+resource "kubernetes_deployment" "external_dns_edgecenter" {
+  metadata {
+    name      = "external-dns-edgecenter"
+    namespace = var.namespace
+  }
+  spec {
+    template {
+      spec {
+        service_account_name = "external-dns" # Убедитесь, что Service Account существует и имеет права
+        container {
+          name  = "external-dns"
+          image = "registry.k8s.io/external-dns/external-dns:v0.13.0"
+          args = [
+            "--source=service",
+            "--source=ingress",
+            "--provider=webhook",
+            "--webhook-provider-url=http://external-dns-edgecenter-webhook:8888", # Адрес сервиса нашего webhook
+            "--annotation-filter=external-dns.alpha.kubernetes.io/target-provider=edgecenter",
+            "--registry=txt",
+            "--txt-owner-id=external-dns-edgecenter"
+          ]
+          # Добавьте ресурсы и пробы по необходимости
+        }
+      }
+    }
+  }
+}
 ```
 
-### Настройка ExternalDNS для EdgeCenter
+### Настройка ExternalDNS для Yandex (через Terraform)
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: external-dns-edgecenter
-spec:
-  template:
-    spec:
-      containers:
-      - name: external-dns
-        image: registry.k8s.io/external-dns/external-dns:v0.13.0
-        args:
-        - --source=service
-        - --source=ingress
-        - --provider=webhook
-        - --webhook-provider-url=http://external-dns-edgecenter-webhook:8888
-        - --annotation-filter=external-dns.alpha.kubernetes.io/target-provider=edgecenter
-        - --registry=txt
-        - --txt-owner-id=external-dns-edgecenter
-```
+Сначала создайте секрет с учетными данными Yandex Cloud (см. секцию "Предварительные требования"). Затем создайте Deployment:
 
-### Настройка ExternalDNS для Yandex
-
-Сначала создайте секрет с учетными данными Yandex Cloud:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: yandex-dns-credentials
-  namespace: external-dns
-type: Opaque
-data:
-  folder-id: <base64-encoded-folder-id>
-  token: <base64-encoded-token>
-```
-
-Затем создайте deployment для Yandex ExternalDNS:
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: external-dns-yandex
-spec:
-  template:
-    spec:
-      containers:
-      - name: external-dns
-        image: registry.k8s.io/external-dns/external-dns:v0.13.0
-        args:
-        - --source=service
-        - --source=ingress
-        - --provider=yandex
-        - --registry=txt
-        - --txt-owner-id=external-dns-yandex
-        env:
-        - name: YANDEX_CLOUD_FOLDER_ID
-          valueFrom:
-            secretKeyRef:
-              name: yandex-dns-credentials
-              key: folder-id
-        - name: YANDEX_CLOUD_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: yandex-dns-credentials
-              key: token
+```terraform
+resource "kubernetes_deployment" "external_dns_yandex" {
+  metadata {
+    name      = "external-dns-yandex"
+    namespace = var.namespace
+  }
+  spec {
+    template {
+      spec {
+        service_account_name = "external-dns" # Убедитесь, что Service Account существует и имеет права
+        container {
+          name  = "external-dns"
+          image = "registry.k8s.io/external-dns/external-dns:v0.13.0"
+          args = [
+            "--source=service",
+            "--source=ingress",
+            "--provider=yandex",
+            "--registry=txt",
+            "--txt-owner-id=external-dns-yandex"
+          ]
+          env {
+            name = "YANDEX_CLOUD_FOLDER_ID"
+            value_from {
+              secret_key_ref {
+                name = "yandex-dns-credentials"
+                key  = "folder-id"
+              }
+            }
+          }
+          env {
+            name = "YANDEX_CLOUD_TOKEN"
+            value_from {
+              secret_key_ref {
+                name = "yandex-dns-credentials"
+                key  = "token"
+              }
+            }
+          }
+          # Добавьте ресурсы и пробы по необходимости
+        }
+      }
+    }
+  }
+}
 ```
 
 ### Использование
@@ -406,75 +390,39 @@ spec:
   selector:
     app: my-app
 
----
-# Пример 3: Ingress с EdgeCenter DNS
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: app-edgecenter
-  annotations:
-    external-dns.alpha.kubernetes.io/target-provider: edgecenter
-spec:
-  rules:
-  - host: app.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: app-edgecenter
-            port:
-              number: 80
-
----
-# Пример 4: Ingress с Yandex DNS
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: app-yandex
-  # Не указываем target-provider
-spec:
-  rules:
-  - host: app.example.ru
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: app-yandex
-            port:
-              number: 80
+# ... (Примеры с Ingress аналогичны)
 ```
 
 ### Принцип работы
 
-1. EdgeCenter ExternalDNS:
-   - Обрабатывает только ресурсы с аннотацией `external-dns.alpha.kubernetes.io/target-provider=edgecenter`
-   - Создает DNS-записи в EdgeCenter DNS
-   - Использует webhook для взаимодействия с API EdgeCenter
-
-2. Yandex ExternalDNS:
-   - Обрабатывает все остальные ресурсы (без специальной аннотации)
-   - Создает DNS-записи в Yandex DNS
-   - Напрямую взаимодействует с API Yandex Cloud
+1.  **EdgeCenter ExternalDNS:**
+    *   Обрабатывает только ресурсы с аннотацией `external-dns.alpha.kubernetes.io/target-provider=edgecenter`.
+    *   Отправляет запросы на webhook `external-dns-edgecenter-webhook`.
+2.  **Yandex ExternalDNS:**
+    *   Обрабатывает все остальные ресурсы (без этой аннотации).
+    *   Напрямую взаимодействует с API Yandex Cloud.
+3.  **EdgeCenter Webhook:**
+    *   Получает запросы от EdgeCenter ExternalDNS.
+    *   Взаимодействует с API EdgeCenter DNS для создания/обновления/удаления записей (или логирует в режиме `dryRun`).
 
 ### Рекомендации
 
-1. Используйте разные `txt-owner-id` для каждого экземпляра ExternalDNS
-2. Проверяйте логи обоих экземпляров при отладке
-3. При первом развертывании используйте режим `--dry-run` для проверки
-4. Следите за правильностью аннотаций в ваших ресурсах
-5. Рекомендуется использовать разные домены для разных провайдеров
-6. Убедитесь, что у вас настроены правильные разрешения (IAM) для обоих провайдеров
-7. Используйте разные неймспейсы для разных провайдеров, если это возможно
+1.  Используйте разные `txt-owner-id` для каждого экземпляра ExternalDNS.
+2.  Проверяйте логи обоих экземпляров ExternalDNS и webhook при отладке.
+3.  При первом развертывании используйте режим `dryRun=true` для проверки.
+4.  Следите за правильностью аннотаций в ваших ресурсах.
+5.  Рекомендуется использовать разные домены для разных провайдеров, если это применимо.
+6.  Убедитесь, что у вас настроены правильные разрешения (IAM) для обоих провайдеров.
+7.  Используйте разные неймспейсы для разных провайдеров, если это возможно.
 
 ### Отладка
 
 Для проверки работы мультипровайдерной конфигурации:
 
 ```bash
+# Проверка статуса подов
+kubectl get pods -n external-dns
+
 # Проверка логов EdgeCenter ExternalDNS
 kubectl logs -f deployment/external-dns-edgecenter -n external-dns
 
@@ -485,60 +433,83 @@ kubectl logs -f deployment/external-dns-yandex -n external-dns
 kubectl logs -f deployment/external-dns-edgecenter-webhook -n external-dns
 
 # Проверка созданных DNS-записей в EdgeCenter
+# Замените $TOKEN и $ZONE_ID
 curl -H "Authorization: Bearer $TOKEN" https://api.edgecenter.ru/dns/v2/zones/$ZONE_ID/records
 
 # Проверка созданных DNS-записей в Yandex Cloud
+# Замените $ZONE_NAME
 yc dns zone list-records --name=$ZONE_NAME
 ```
 
 ### Известные проблемы
 
-1. При использовании нескольких провайдеров убедитесь, что у вас нет конфликтов в TXT-записях для registry
-2. Если вы используете разные домены для разных провайдеров, убедитесь, что domain-filter настроен правильно
-3. При переключении провайдера для существующей записи может потребоваться ручное удаление старой записи
-4. Возможны задержки при обновлении DNS-записей из-за кэширования DNS и TTL
-5. При использовании режима `--dry-run` записи не будут созданы, но в логах вы увидите, какие изменения были бы применены
+1.  При использовании нескольких провайдеров убедитесь, что у вас нет конфликтов в TXT-записях для registry.
+2.  Если вы используете разные домены для разных провайдеров, убедитесь, что `domain-filter` (если используется) настроен правильно в args ExternalDNS.
+3.  При переключении провайдера для существующей записи может потребоваться ручное удаление старой записи.
+4.  Возможны задержки при обновлении DNS-записей из-за кэширования DNS и TTL.
+5.  При использовании режима `dryRun=true` записи не будут созданы, но в логах вы увидите, какие изменения были бы применены.
 
 ### Устранение неполадок
 
 Если у вас возникли проблемы:
 
-1. Проверьте логи всех компонентов:
-   - EdgeCenter ExternalDNS
-   - Yandex ExternalDNS
-   - EdgeCenter Webhook
-   - Kubernetes Events (`kubectl get events`)
+1.  **Проверьте логи всех компонентов:**
+    *   EdgeCenter ExternalDNS
+    *   Yandex ExternalDNS
+    *   EdgeCenter Webhook
+    *   Kubernetes Events (`kubectl get events -n external-dns`)
 
-2. Убедитесь, что все секреты настроены правильно:
-   ```bash
-   # Проверка секрета EdgeCenter
-   kubectl get secret -n external-dns external-dns-edgecenter-webhook -o yaml
-   
-   # Проверка секрета Yandex
-   kubectl get secret -n external-dns yandex-dns-credentials -o yaml
-   ```
+2.  **Убедитесь, что все секреты настроены правильно:**
+    ```bash
+    # Проверка секрета EdgeCenter
+    kubectl get secret -n external-dns edgecenter-webhook-secret -o yaml # или edgecenter-credentials
 
-3. Проверьте настройки RBAC:
-   ```bash
-   # Проверка прав ServiceAccount
-   kubectl get clusterrole external-dns -o yaml
-   kubectl get clusterrolebinding external-dns-viewer -o yaml
-   ```
+    # Проверка секрета Yandex
+    kubectl get secret -n external-dns yandex-dns-credentials -o yaml
+    ```
 
-4. Проверьте сетевую доступность:
-   ```bash
-   # Для EdgeCenter Webhook
-   kubectl exec -it deploy/external-dns-edgecenter -n external-dns -- wget -qO- http://external-dns-edgecenter-webhook:8888/health
-   
-   # Для Yandex API
-   kubectl exec -it deploy/external-dns-yandex -n external-dns -- wget -qO- https://api.cloud.yandex.net/dns/v1/zones
-   ```
+3.  **Проверьте настройки RBAC** (если используете отдельные Service Accounts):
+    ```bash
+    kubectl describe clusterrolebinding <binding-name>
+    kubectl describe serviceaccount <sa-name> -n external-dns
+    ```
 
-5. Проверьте конфигурацию ресурсов:
-   ```bash
-   # Проверка аннотаций на сервисах
-   kubectl get svc -A -o custom-columns=NAME:.metadata.name,ANNOTATIONS:.metadata.annotations
-   
-   # Проверка аннотаций на ингрессах
-   kubectl get ing -A -o custom-columns=NAME:.metadata.name,ANNOTATIONS:.metadata.annotations
-   ``` 
+4.  **Проверьте сетевую доступность:**
+    ```bash
+    # От пода EdgeCenter ExternalDNS к Webhook
+    kubectl exec -it deploy/external-dns-edgecenter -n external-dns -- wget -qO- http://external-dns-edgecenter-webhook:8888/health
+
+    # От пода Yandex ExternalDNS к API Yandex
+    kubectl exec -it deploy/external-dns-yandex -n external-dns -- wget -T 5 -qO- https://api.cloud.yandex.net/
+
+    # От пода Webhook к API EdgeCenter
+    kubectl exec -it deploy/external-dns-edgecenter-webhook -n external-dns -- wget -T 5 -qO- https://api.edgecenter.ru/
+    ```
+
+5.  **Проверьте конфигурацию ресурсов:**
+    ```bash
+    # Проверка аннотаций на сервисах
+    kubectl get svc -A -o custom-columns=NAME:.metadata.name,NS:.metadata.namespace,ANNOTATIONS:.metadata.annotations
+
+    # Проверка аннотаций на ингрессах
+    kubectl get ing -A -o custom-columns=NAME:.metadata.name,NS:.metadata.namespace,ANNOTATIONS:.metadata.annotations
+    ```
+
+## Безопасность
+
+1.  Используйте External Secrets или другой безопасный механизм для управления токеном EdgeCenter.
+2.  Настройте RBAC для ограничения доступа Service Accounts.
+3.  Запускайте контейнер от имени непривилегированного пользователя (`securityContext`).
+4.  Регулярно обновляйте токены доступа.
+
+## API
+
+Webhook реализует стандартный [ExternalDNS Webhook Provider API](https://github.com/kubernetes-sigs/external-dns/blob/master/docs/proposal/webhook.md).
+
+## Разработка
+
+Инструкции по локальной разработке и тестированию...
+
+## Лицензия
+
+MIT License 
