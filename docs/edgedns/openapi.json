@@ -1,0 +1,3453 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "DNS as a Service",
+    "description": "EdgeЦентр provides an API that allows you to interact with DNSaaS.\n\nDNSaaS allows for managing DNS zones and records.\n\n# Overview\n\nOur API has resource-oriented, predictable URLs and uses the HTTP response codes to indicate API errors.\nWe use standard HTTP features, such as HTTP authentication and HTTP terminology, that HTTP clients can understand.\nJSON is returned in all API responses, including errors.\n\n### Maximum body request\n\nMaximum API body request size is 1MB.\n\n### Rate limits\n\nThere is a general limit of 4 requests per second. If you go over the rate limit, you will receive a response status of 429.",
+    "version": "v2"
+  },
+  "servers": [
+    {
+      "url": "https://api.edgecenter.ru/dns"
+    }
+  ],
+  "security": [
+    {
+      "APIKey": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Service",
+      "description": "Returns information about your DNS service."
+    },
+    {
+      "name": "Zones",
+      "description": "Manages your DNS zones."
+    },
+    {
+      "name": "Statistics",
+      "description": "Returns various DNS statistics."
+    },
+    {
+      "name": "RRsets",
+      "description": "Manages your RRsets.\nRRsets can be either static or dynamic.<lu><li><b>Static RRsets</b> are those that have no response selection filters enabled.</li><li><b>Dynamic RRsets</b> are those that have one or more response selection filters enabled.</li></lu>\nWith dynamic RRsets, the resource records are selected for DNS response based on their metadata, applied filters, and the __strict__ field value.\n### Strict field\nIf `strict: true`, then only records matching the filter are returned in the response. If none match the filter, no records are returned. If `strict: false`, then all records are returned in the response if no records match the filter.\n### Metadata\nThe following metadata can be added to the resource records: <lu><li><b>ip</b> — a list of network addresses in CIDR format</li>\nExample: `meta: {ip: [92.101.12.150/25]}` or `meta: {ip: [1024:de:1010::/48]}`<li><b>asn</b> — a list of autonomous system numbers</li>\nExample: `meta: {asn: 12345}` or `meta: {asn: 67890}`<li><b>regions</b> — a list of country region codes. We use the ISO 3166-2 format to specify the region for all countries except Russia. To specify the region of Russia, use the data according to GOST 7.67. Use the following format to specify Russian regions that do not have codes in GOST 7.67:<ul><li>`ru-sev` — Sevastopol</li><li>`ru-cri` — Crimea</li><li>`ru-don` — DNR</li><li>`ru-lug` — LNR</li><li>`ru-zap` — Zaporozhye</li><li>`ru-khe` — Kherson</li></ul></li>Example: `meta: {regions: [ru-kya]}` or `meta: {regions: [ru-mow]}`<li><b>countries</b> — a list of country codes</li>\nExample: `meta: {countries: [kz]}` or `meta: {countries: [am]}`<li><b>continents</b> — a list of continent codes</li>\n Example: `meta: {continents: [eu]}` or `meta: {continents: [as]}`<li><b>latlong</b> — latitude and longitude coordinates</li>\n  Example: `meta: {latlong: [-37.813755, 144.962672]}` or `meta: {latlong: [34.056152, -118.247055]}`<li><b>weight</b> — the weight of the resource record from <b>0</b> to <b>100</b></li>\n   Example: `meta: {weight: 10}` or `meta: {weight: 50}`<li><b>default</b> —  determines, if the resource record should be used by default when other records are not selected based on their meta</li>\n  Example: `meta: {default: true}` or `meta: {default: false}`<li><b>backup</b> — determines, if the resource record should be included in the response only when DNS Failover detects the outage of all non-backup records</li>\n  Example: `meta: {backup: true}` or `meta: {backup: false}`<li><b>notes</b> — any notes or comments</li>\nExample: `meta: {notes: DC name}` or `meta: {notes: My cluster}`<li><b>failover</b> — DNS Failover settings. The fields depend on the protocol you choose.</li>\n</lu>\n\n <b>TCP/UDP</b> <lu><li><b>port</b> — the port to connect to. For example, 80, 443, or another one.</li><li><b>frequency</b> — the interval of checks in seconds</li><li><b>timeout</b> — the time within which your web servers should give the response in seconds</li><li><b>protocol</b> — the protocol for connection</li>\n</lu>\n\n <b>ICMP</b> <lu><li><b>frequency</b> —  the interval of checks in seconds</li><li><b>protocol</b> — the protocol for connection</li><li><b>timeout</b> — the time within which your web servers should give the response in seconds</li>\n</lu>\n\n <b>HTTP</b> <lu><li><b>port</b> —  the port to connect to. For example, 80, 443, or another one.</li><li><b>frequency</b> —  the interval of checks in seconds</li><li><b>timeout</b> —  the time within which your web servers should give the response in seconds</li><li><b>protocol</b> —  the protocol for connection</li><li><b>host</b> —  the value of the Host header to be passed during the HTTP request</li><li><b>url</b> —  the URL that will be requested for checks</li><li><b>method</b> —  the method for checking the requests. For example, GET</li><li><b>tls</b> —  whether to use TLS. Can have either <b>true</b> or <b>false</b> value</li><li><b>http_status_code</b> —  the expected HTTP response code. Leave the field blank if any response is ok</li><li><b>regexp</b> —  the regular expression that should match the response body to make the check successful. Leave the field blank if the check is not needed</li>\nExample: `meta: {failover: {frequency: 10, port: 80, protocol: TCP, timeout: 10}}` or `meta: {failover: {frequency: 10, host: example.com, http_status_code: 500, method: GET, port: 80, protocol: HTTP, regexp: /folder/*, timeout: 10, tls: false, url: /failover}}`\n</lu>\n### Filters\n\nThe following response selection filters can be applied to the resource records:\n### 1. geodns\nThe resource record will be included in the response if its metadata matches the geo data of the user's IP from the EDNS data or the recursor's IP.\nExample: `filters: [{type: geodns, strict: false}]`\nThe following metadata is considered by the filter: <lu><li>ip</li><li>asn</li><li>regions</li><li>countries</li><li>continents</li><li>default</li><li>notes</li></lu>\n### 2. geodistance\nThe resource records will be included in the response from nearest to furthest based on the distance from the user's IP to the coordinates specified in the metadata.\nExample: `filters: [{type: geodistance,strict: true}]`\nThe following metadata is considered by the filter: <lu><li>latlong</li></lu>\n### 3. weighted_shuffle\nThe resource records will be included in the response based on their weight value. The weight determines the frequency of the resource record getting into the selection. The default value is 50.\nExample: `filters: [{type: weighted_shuffle, strict: false}]`\nThe following metadata is considered by the filter: <lu><li>weight</li></lu>\n### 4. default\nThe resource records with `meta: {default: true}` are used by default when other records are not selected based on their meta.\nIf the resource records have `meta: {default: false}` or don’t have this meta, and the filter has `strict: false`, then all records will be included in the response. No resource records will be returned if the filter has `strict: true`.\nExample: `filters: [{type: default, strict: true}]`\nThe following metadata is considered by the filter: <lu><li>default</li></lu>\n### 5. first_n\nCuts the first N resource records from the response (where N is the limit field value).\nExample: `filters: [{type: first_n, limit: 1}]` will return only one resource record.\n### 6. is_healthy\nThe resource records will be included in the response based on the results of the DNS Failover monitoring.\nExample: `filters: [{type: is_healthy, strict: false}]`\nThe following metadata is considered by the filter:<lu><li>backup</li></lu>"
+    },
+    {
+      "name": "RR",
+      "description": "Manages your resource records."
+    },
+    {
+      "name": "Secondary",
+      "description": "Manages your secondary DNS zones."
+    },
+    {
+      "name": "Failover",
+      "description": "DNS Failover is an option that monitors the availability of your domains or servers and, in case of issues, excludes non-working IP addresses from DNS responses. As a result, the traffic is redirected from the broken server to a working one, and your resource stays available for all users.\n<br><br>The option is paid. To activate it, contact the support team or your account manager."
+    }
+  ],
+  "paths": {
+    "/v2/clients/me/features": {
+      "get": {
+        "tags": [
+          "Service"
+        ],
+        "summary": "Get DNS features details",
+        "description": "Returns information about available DNS features.",
+        "operationId": "ClientsFeatures",
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientMeFeaturesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "headers": {
+              "error": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/platform/info": {
+      "get": {
+        "tags": [
+          "Service"
+        ],
+        "summary": "Get DNS service details",
+        "description": "Returns details about your DNS service.",
+        "operationId": "ClientInfo",
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InfoClientResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/secondary-zones": {
+      "get": {
+        "tags": [
+          "Secondary"
+        ],
+        "summary": "Get all secondary zones",
+        "description": "Returns information about your secondary zones.",
+        "operationId": "SecondaryZones",
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Specify the number of records to be skipped from the beginning of the records list",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Limit the number of records displayed in the response",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Specify either the zone name or TSIG key name or TSIG master to filter by them",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListSecondaryZoneResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/secondary-zones/{zoneName}": {
+      "put": {
+        "tags": [
+          "Secondary"
+        ],
+        "summary": "Update a secondary zone",
+        "description": "Changes the details of your secondary zone.",
+        "operationId": "UpdateSecondaryZone",
+        "parameters": [
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputSecondaryZone"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputSecondaryZone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        },
+        "x-codegen-request-body-name": "SecondaryZone"
+      },
+      "post": {
+        "tags": [
+          "Secondary"
+        ],
+        "summary": "Create a secondary zone",
+        "description": "Creates a secondary zone in your account.",
+        "operationId": "CreateSecondaryZone",
+        "parameters": [
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputSecondaryZone"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputSecondaryZone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        },
+        "x-codegen-request-body-name": "SecondaryZone"
+      },
+      "delete": {
+        "tags": [
+          "Secondary"
+        ],
+        "summary": "Delete a secondary zone",
+        "description": "Deletes a secondary zone from your account.",
+        "operationId": "DeleteSecondaryZoneByName",
+        "parameters": [
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {}
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/tarifflimits": {
+      "get": {
+        "tags": [
+          "Service"
+        ],
+        "summary": "Get plan limits",
+        "description": "Returns information about the remaining limits on your plan.",
+        "operationId": "TariffLimits",
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemainingLimitsForClientResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones": {
+      "get": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Get all DNS zones",
+        "description": "Returns information about your DNS zones and their records. You can use query parameters to filter the zones.",
+        "operationId": "Zones",
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Specify the number of records to be skipped from the beginning of the records list",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Limit the number of records displayed in the response",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "description": "Sort records by one of the following fields: __id__, __name__, __render_updated_at__",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order_direction",
+            "in": "query",
+            "description": "Specify the order of the records in the list\n\nChoose one of the values: <ul>\n<li><b>asc</b> — to set the ascending order</li>\n<li><b>desc</b> — to set the descending order</li>\n</ul>",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "query",
+            "description": "Specify a zone ID that should be displayed in the output. You can add several zone IDs",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Specify a zone name that should be displayed in the output. You can add several zone names<br>\n\nNote: <ul>\n<li>If you type any letter, all zone names that contain that letter will be displayed</li>\n</ul>",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "exact_match",
+            "in": "query",
+            "description": "Specify whether to filter the zones by exact match of their names<br>\nChoose one of the values: <ul>\n<li><b>true</b> — to filter the zones by exact match of name</li>\n<li><b>false</b> — not to filter the zones by exact match of name</li>\n</ul>\nNote: <ul>\n<li>The parameter only works with the name parameter</li>\n</ul>",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "enabled",
+            "in": "query",
+            "description": "Specify which zones you want to see in the output: enabled or disabled<br>\nChoose one of the values: <ul>\n<li><b>true</b> — to get all enabled zones</li>\n<li><b>false</b> — to get all disabled zones</li>\n</ul>",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "delegated",
+            "in": "query",
+            "description": "Specify which zones you want to see in the output: delegated or undelegated<br>\nChoose one of the values: <ul>\n<li><b>true</b> — to get all delegated zones</li>\n<li><b>false</b> — to get all undelegated zones</li>\n</ul>",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "updated_at_from",
+            "in": "query",
+            "description": "Specify the date and time from the first required update of the zone in RFC 3339 format",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "updated_at_to",
+            "in": "query",
+            "description": "Specify the date and time to the latest update of the zone in RFC 3339 format",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListZoneResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Create a DNS zone",
+        "description": "Creates a DNS zone in your account.",
+        "operationId": "CreateZone",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputZone"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateZoneResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        },
+        "x-codegen-request-body-name": "zone"
+      }
+    },
+    "/v2/zones/monitoring/public_ips_list": {
+      "get": {
+        "tags": [
+          "Failover"
+        ],
+        "summary": "Get DNS Failover IP addresses",
+        "description": "Returns a list of active DNS Failover IP addresses that can monitor the availability of your server.\n\nThis list is updated occasionally. If you want to set up an IP ACL on your server, you need to monitor\nthe relevance of this list. We recommend using an IP ACL update script.",
+        "operationId": "PublicIPsList",
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicIPListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{name}": {
+      "get": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Get a DNS zone",
+        "description": "Returns information about a specific DNS zone and its records.",
+        "operationId": "Zone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemZoneResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Update a DNS zone",
+        "description": "Changes the details of your DNS zone.",
+        "operationId": "UpdateZone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputZone"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {}
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        },
+        "x-codegen-request-body-name": "zone"
+      },
+      "delete": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Delete a DNS zone",
+        "description": "Deletes a DNS zone from your account.",
+        "operationId": "DeleteZone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful.",
+            "content": {}
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{name}/disable": {
+      "patch": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Disable a DNS zone",
+        "description": "Turns off your DNS zone. When a zone is disabled, its records are not resolved by the DNS servers.",
+        "operationId": "DisableZone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {}
+          },
+          "404": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{name}/enable": {
+      "patch": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Enable a DNS zone",
+        "description": "Turns on your DNS zone. When a zone is enabled, its records are resolved by the DNS servers.",
+        "operationId": "EnableZone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {}
+          },
+          "404": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{name}/export": {
+      "get": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Export a DNS zone",
+        "description": "Exports the contents of a DNS zone, including SOA and other existing records, from your account.",
+        "operationId": "ExportZone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportZoneResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{name}/statistics": {
+      "get": {
+        "tags": [
+          "Statistics"
+        ],
+        "summary": "Get DNS zone statistics",
+        "description": "Returns the requests statistics for your DNS zone, including a total number of requests and a number of requests per record type.",
+        "operationId": "ZoneStatistics",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name.\nEnter <b>all</b> to get statistics for all zones",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Specify the starting point of the required period in UNIX timestamp format.\nIf not specified, you will get statistics for up to one hour",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Specify the end of the required period in UNIX timestamp format.\nIf not specified, you will get statistics for up to one hour",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "description": "Enter the DNS record type. You can add several types",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "granularity",
+            "in": "query",
+            "description": "Set the time intervals for grouping the data.\nUse decimal numbers with optional fractions and a unit suffix\n\nChoose one of the time units: <lu>\n<li><b>s</b> — seconds</li>\n<li><b>m</b> — minutes</li>\n<li><b>h</b> — hours</li>\n</lu>",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticsZoneResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{zoneName}/import": {
+      "post": {
+        "tags": [
+          "Zones"
+        ],
+        "summary": "Import a DNS zone",
+        "description": "Imports a DNS zone into your account.\nTo import the zone, add its contents in bind9 format like this:\n<pre><code><span class=\"token string\">\n';TTL 14400\ntest.local. IN SOA     ns1.test.local. admin.test.local. (\n2017082401      ; Serial\n10800           ; Refresh\n3600            ; Retry\n604800          ; Expire\n604800          ; Negative Cache TTL\n)\nIN      NS      ns1.test.local.\nIN      NS      ns2.test.local.\nIN      MX 10   mx.test.local.\nIN      MX 20   mx2.test.local.\n@               IN      A       192.168.1.1\nlocalhost       IN      A       127.0.0.1\nns1             IN      A       192.168.1.2\nns2             IN      A       192.168.1.3\nmx              IN      A       192.168.1.4\nmail            IN      A       192.168.1.5\nwww             IN      CNAME   test.local.               '\n</span></code></pre>",
+        "operationId": "ImportZone",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportZoneResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{zoneName}/resource_records": {
+      "get": {
+        "tags": [
+          "RR"
+        ],
+        "summary": "Get all resource records",
+        "description": "Returns a list of resource records of a given zone.",
+        "operationId": "ResourceRecordList",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Specify a RRset name to filter by it",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Specify a RRset type to filter by it",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Specify the number of records to be skipped from the beginning of the records list",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Limit the number of records displayed in the response",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "description": "Sort records by one of the following fields: __name__, __type__, __id__",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order_direction",
+            "in": "query",
+            "description": "Specify the order of the records in the list\n\nChoose one of the values: <ul>\n<li><b>asc</b> — to set the ascending order</li>\n<li><b>desc</b> — to set the descending order</li>\n</ul>",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "failover",
+            "in": "query",
+            "description": "If failover is true we will get all rrsets with failover in meta,\nif failover is false we will get all rrsets without failover in meta.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "meta_filters",
+            "in": "query",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOfResourceRecordsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{zoneName}/rrsets": {
+      "get": {
+        "tags": [
+          "RRsets"
+        ],
+        "summary": "Get all RRsets",
+        "description": "Returns a list of RRsets of a given zone.",
+        "operationId": "RRSetList",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Specify a RRset name to filter by it",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Specify a RRset type to filter by it",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Specify the number of records to be skipped from the beginning of the records list",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Limit the number of records displayed in the response",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "description": "Sort records by one of the following fields: __name__, __type__, __id__",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order_direction",
+            "in": "query",
+            "description": "Specify the order of the records in the list\n\nChoose one of the values: <ul>\n<li><b>asc</b> — to set the ascending order</li>\n<li><b>desc</b> — to set the descending order</li>\n</ul>",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "failover",
+            "in": "query",
+            "description": "If failover is true we will get all rrsets with failover in meta,\nif failover is false we will get all rrsets without failover in meta.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "meta_filters",
+            "in": "query",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListRRSetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "RRsets"
+        ],
+        "summary": "Delete the RRsets group of id",
+        "description": "Deletes the RRsets group of id from the specified DNS zone in your account.",
+        "operationId": "DeleteRRSets",
+        "parameters": [
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RRsetsID"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RRsetsID"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        },
+        "x-codegen-request-body-name": "RRSetsID"
+      }
+    },
+    "/v2/zones/{zoneName}/{rrsetName}/{rrsetType}": {
+      "get": {
+        "tags": [
+          "RRsets"
+        ],
+        "summary": "Get an RRset",
+        "description": "Returns information about a specific RRset.",
+        "operationId": "RRSet",
+        "parameters": [
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetName",
+            "in": "path",
+            "description": "RRset name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetType",
+            "in": "path",
+            "description": "RRset type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputRRSet"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "RRsets"
+        ],
+        "summary": "Update an RRset",
+        "description": "Changes an RRset in the specified DNS zone in your account.",
+        "operationId": "UpdateRRSet",
+        "parameters": [
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetName",
+            "in": "path",
+            "description": "RRset name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetType",
+            "in": "path",
+            "description": "RRset type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputRRSet"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputRRSet"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        },
+        "x-codegen-request-body-name": "RRSet"
+      },
+      "post": {
+        "tags": [
+          "RRsets"
+        ],
+        "summary": "Create an RRset",
+        "description": "Creates an RRset in the specified DNS zone in your account.",
+        "operationId": "CreateRRSet",
+        "parameters": [
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetName",
+            "in": "path",
+            "description": "RRset name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetType",
+            "in": "path",
+            "description": "RRset type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InputRRSet"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutputRRSet"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        },
+        "x-codegen-request-body-name": "RRSet"
+      },
+      "delete": {
+        "tags": [
+          "RRsets"
+        ],
+        "summary": "Delete an RRset",
+        "description": "Deletes an RRset from the specified DNS zone in your account.",
+        "operationId": "DeleteRRSet",
+        "parameters": [
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetName",
+            "in": "path",
+            "description": "RRset name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetType",
+            "in": "path",
+            "description": "RRset type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful.",
+            "content": {}
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    },
+    "/v2/zones/{zoneName}/{rrsetName}/{rrsetType}/failover/log": {
+      "get": {
+        "tags": [
+          "Failover"
+        ],
+        "summary": "Get DNS Failover logs",
+        "description": "Returns DNS Failover logs for the given RRset.",
+        "operationId": "FailoverHistory",
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Specify the number of records to be skipped from the beginning of the records list",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Limit the number of records displayed in the response",
+            "schema": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          },
+          {
+            "name": "zoneName",
+            "in": "path",
+            "description": "Zone name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetName",
+            "in": "path",
+            "description": "RRset name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rrsetType",
+            "in": "path",
+            "description": "RRset type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailoverLogResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error message response",
+            "content": {}
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AdminListRRSetResponse": {
+        "type": "object",
+        "properties": {
+          "rrsets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutputRRSet"
+            }
+          },
+          "total_amount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AdminZoneRenderResponse": {
+        "type": "object"
+      },
+      "BillingStatisticsFlatResponse": {
+        "type": "array",
+        "description": "BillingStatisticsFlatResponse Billing statistics response with flat=true",
+        "items": {
+          "$ref": "#/components/schemas/StatisticsMetrics"
+        }
+      },
+      "BillingStatisticsResponse": {
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StatisticsMetrics"
+            }
+          }
+        },
+        "description": "BillingStatisticsResponse Billing statistics response with flat=false"
+      },
+      "Client": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": "integer",
+            "description": "Client’s account ID",
+            "format": "uint64",
+            "example": 64
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shows if the service is enabled",
+            "example": true
+          },
+          "reseller": {
+            "type": "integer",
+            "description": "Reseller’s account ID",
+            "format": "int64",
+            "example": 88
+          },
+          "status": {
+            "type": "string",
+            "description": "Status of the service",
+            "example": "new"
+          },
+          "tariff_id": {
+            "type": "integer",
+            "description": "Plan ID",
+            "format": "uint32",
+            "example": 212
+          },
+          "tariff_name": {
+            "$ref": "#/components/schemas/TariffName"
+          }
+        },
+        "description": "Client"
+      },
+      "ClientFeature": {
+        "type": "object",
+        "properties": {
+          "create_date": {
+            "type": "string",
+            "description": "Date and time when the feature was activated (ISO 8086/RFC 3339 format)",
+            "format": "date-time"
+          },
+          "feature_id": {
+            "type": "integer",
+            "description": "Feature ID",
+            "format": "uint64",
+            "example": 1
+          },
+          "id": {
+            "type": "integer",
+            "description": "Internal feature ID",
+            "format": "uint64",
+            "example": 1
+          },
+          "name": {
+            "type": "string",
+            "description": "Feature name",
+            "example": "can_edit_primary_ns"
+          }
+        }
+      },
+      "ClientFeatures": {
+        "type": "array",
+        "description": "Features information",
+        "items": {
+          "$ref": "#/components/schemas/ClientFeature"
+        }
+      },
+      "ClientFeaturesResponse": {
+        "type": "object",
+        "properties": {
+          "clientFeatures": {
+            "$ref": "#/components/schemas/ClientFeatures"
+          },
+          "clientID": {
+            "type": "integer",
+            "description": "Client’s account ID",
+            "format": "uint64"
+          }
+        }
+      },
+      "ClientIDFeature": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": "integer",
+            "description": "Client’s account ID",
+            "format": "uint64",
+            "example": 12345
+          },
+          "create_date": {
+            "type": "string",
+            "description": "Date and time when the feature was activated (ISO 8086/RFC 3339 format)",
+            "format": "date-time"
+          },
+          "feature": {
+            "$ref": "#/components/schemas/Feature"
+          },
+          "feature_id": {
+            "type": "integer",
+            "description": "Feature ID",
+            "format": "uint64",
+            "example": 1
+          },
+          "id": {
+            "type": "integer",
+            "description": "Internal feature ID",
+            "format": "uint64",
+            "example": 1
+          }
+        },
+        "description": "Feature information"
+      },
+      "ClientIDFeatureResponse": {
+        "type": "object",
+        "properties": {
+          "ClientIDFeature": {
+            "$ref": "#/components/schemas/ClientIDFeature"
+          }
+        }
+      },
+      "ClientIDFeatures": {
+        "type": "array",
+        "description": "Features information",
+        "items": {
+          "$ref": "#/components/schemas/ClientIDFeature"
+        }
+      },
+      "ClientIDFeaturesResponse": {
+        "type": "object",
+        "properties": {
+          "clientFeatures": {
+            "$ref": "#/components/schemas/ClientIDFeatures"
+          }
+        }
+      },
+      "ClientMeFeaturesResponse": {
+        "type": "object",
+        "properties": {
+          "free_features": {
+            "$ref": "#/components/schemas/ClientFeatures"
+          },
+          "id": {
+            "type": "integer",
+            "description": "Account ID",
+            "format": "uint64",
+            "example": 123
+          },
+          "paid_features": {
+            "$ref": "#/components/schemas/ClientFeatures"
+          }
+        }
+      },
+      "CreateResourceRecordResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "uint64"
+          }
+        }
+      },
+      "CreateZoneResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "ID of a created zone",
+            "format": "uint64",
+            "example": 43563
+          }
+        }
+      },
+      "DelegationStatusResponse": {
+        "type": "object",
+        "properties": {
+          "authoritative_name_servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NameServer"
+            }
+          },
+          "delegated": {
+            "type": "boolean"
+          },
+          "ec_authorized_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "is_whitelabel_delegation": {
+            "type": "boolean"
+          },
+          "non_ec_authorized_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "zone_exists": {
+            "type": "boolean"
+          }
+        },
+        "description": "DelegationStatusResponse"
+      },
+      "DeleteGeodnsLinkEndpointRes": {
+        "type": "object"
+      },
+      "DeleteRRSetResponse": {
+        "type": "object"
+      },
+      "DeleteRRSetsResponse": {
+        "type": "object",
+        "properties": {
+          "RRSet": {
+            "$ref": "#/components/schemas/RRsetsID"
+          }
+        }
+      },
+      "DeleteResourceRecordResponse": {
+        "type": "object"
+      },
+      "DeleteZoneResponse": {
+        "type": "object",
+        "description": "DeleteZoneResponse"
+      },
+      "DisableZoneResponse": {
+        "type": "object"
+      },
+      "Duration": {
+        "type": "integer",
+        "description": "A Duration represents the elapsed time between two instants\nas an int64 nanosecond count. The representation limits the\nlargest representable duration to approximately 290 years.",
+        "format": "int64"
+      },
+      "EmptyFeatureResponse": {
+        "type": "object"
+      },
+      "EmptyResponse": {
+        "type": "object"
+      },
+      "EnableZoneResponse": {
+        "type": "object"
+      },
+      "ExportZoneResponse": {
+        "type": "object",
+        "properties": {
+          "zone_file": {
+            "type": "string",
+            "description": "Zone contents"
+          }
+        }
+      },
+      "FailoverLog": {
+        "type": "array",
+        "description": "Log details",
+        "items": {
+          "$ref": "#/components/schemas/FailoverLogEntry"
+        }
+      },
+      "FailoverLogEntry": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Failover action.\nFor instance: <lu>\n<li><b>hook_on_insert</b> — the resource record was added to the Failover</li>\n<li><b>hook_on_fail</b> — the resource record was disabled</li>\n<li><b>hook_on recovery</b> — the resource record is recovered</li>\n</lu>",
+            "example": "hook_on_insert"
+          },
+          "address": {
+            "type": "string",
+            "description": "RRset name",
+            "example": "sdfsdf.suf"
+          },
+          "error_info": {
+            "type": "string",
+            "description": "Details - detailed information about the failover action i.e. error information"
+          },
+          "failed_location_ips": {
+            "type": "array",
+            "description": "FailedLocationIPs - Information about failed check location ips",
+            "items": {
+              "type": "string"
+            }
+          },
+          "passed_location_ip": {
+            "type": "string",
+            "description": "PassedLocationIP Information about passed check location ip"
+          },
+          "time": {
+            "type": "integer",
+            "description": "Log creation time in UNIX timestamp format",
+            "format": "int64",
+            "example": 1685975238
+          }
+        },
+        "description": "FailoverLogEntry"
+      },
+      "FailoverLogResponse": {
+        "type": "object",
+        "properties": {
+          "log": {
+            "$ref": "#/components/schemas/FailoverLog"
+          },
+          "total_amount": {
+            "type": "integer",
+            "description": "Total number of logs displayed in the response",
+            "format": "int64",
+            "example": 1
+          }
+        }
+      },
+      "Feature": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Feature ID",
+            "format": "uint64",
+            "example": 1
+          },
+          "is_free": {
+            "type": "boolean",
+            "description": "Shows if a feature is free or paid",
+            "example": false
+          },
+          "name": {
+            "type": "string",
+            "description": "Feature name",
+            "example": "can_edit_primary_ns"
+          }
+        },
+        "description": "Details of the feature"
+      },
+      "FeatureResponse": {
+        "type": "object",
+        "properties": {
+          "feature": {
+            "$ref": "#/components/schemas/Feature"
+          }
+        }
+      },
+      "Features": {
+        "type": "array",
+        "description": "Feature information",
+        "items": {
+          "$ref": "#/components/schemas/Feature"
+        }
+      },
+      "FeaturesResponse": {
+        "type": "object",
+        "properties": {
+          "features": {
+            "$ref": "#/components/schemas/Features"
+          }
+        }
+      },
+      "Filter": {
+        "required": [
+          "type"
+        ],
+        "type": "object",
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/FilterConfig"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type of filer",
+            "enum": [
+              "geodns"
+            ]
+          }
+        }
+      },
+      "FilterConfig": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "strict": {
+            "type": "boolean"
+          }
+        },
+        "description": "FilterConfig"
+      },
+      "FilterSet": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "uint64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ImportZoneResponse": {
+        "type": "object",
+        "properties": {
+          "imported": {
+            "$ref": "#/components/schemas/ImportedRRSets"
+          },
+          "success": {
+            "type": "boolean",
+            "description": "Indicates whether the import was successful"
+          },
+          "warnings": {
+            "$ref": "#/components/schemas/Warnings"
+          }
+        }
+      },
+      "ImportedRRSets": {
+        "type": "object",
+        "properties": {
+          "qtype": {
+            "type": "integer",
+            "description": "Resource record type",
+            "format": "uint64"
+          },
+          "resource_records": {
+            "type": "integer",
+            "description": "Number of resource records",
+            "format": "uint64"
+          },
+          "rrsets": {
+            "type": "integer",
+            "description": "Number of RRsets",
+            "format": "uint64"
+          },
+          "skipped_resource_records": {
+            "type": "integer",
+            "description": "Number of unimported RRsets",
+            "format": "uint64"
+          }
+        },
+        "description": "Information about imported RRsets"
+      },
+      "InfoClientResponse": {
+        "type": "object",
+        "properties": {
+          "client": {
+            "$ref": "#/components/schemas/Client"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ResellerInfo"
+          }
+        },
+        "description": "InfoClientResponse"
+      },
+      "InfoResponse": {
+        "type": "object",
+        "properties": {
+          "Info": {
+            "$ref": "#/components/schemas/ResellerInfo"
+          }
+        }
+      },
+      "InputAvailableFeatures": {
+        "required": [
+          "available_features"
+        ],
+        "type": "object",
+        "properties": {
+          "available_features": {
+            "type": "array",
+            "description": "List of the paid feature IDs that you can manage for your client's accounts",
+            "example": [
+              2,
+              3
+            ],
+            "items": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          }
+        }
+      },
+      "InputDefaultEnabled": {
+        "required": [
+          "default_enabled"
+        ],
+        "type": "object",
+        "properties": {
+          "default_enabled": {
+            "type": "array",
+            "description": "Specify a list of paid feature IDs that should be enabled for newly created clients.\nNote: <ul>\n<li>The list must contain only available features. You can get the list using the <a href=\"https://apidocs.edgecenter.ru/dns_resellers#tag/Features/operation/MeFeatures\">Get reseller's DNS service settings</a> request</li>\n</ul>",
+            "example": [
+              2,
+              3
+            ],
+            "items": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          }
+        }
+      },
+      "InputFeature": {
+        "required": [
+          "client_id",
+          "feature_id"
+        ],
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": "integer",
+            "description": "Client’s account ID",
+            "format": "uint64",
+            "example": 123
+          },
+          "feature_id": {
+            "type": "integer",
+            "description": "Feature ID",
+            "format": "uint64",
+            "example": 1
+          }
+        }
+      },
+      "InputRRSet": {
+        "required": [
+          "resource_records"
+        ],
+        "type": "object",
+        "properties": {
+          "filters": {
+            "type": "array",
+            "description": "Specify a set of filters to be applied to the RRset",
+            "items": {
+              "$ref": "#/components/schemas/OutputFilter"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            },
+            "description": "Specify the RRset metadata in json format.\nLearn more about metadata <a href=\"https://apidocs.edgecenter.ru/dns#tag/RRsets\">here</a>",
+            "example": {}
+          },
+          "resource_records": {
+            "type": "array",
+            "description": "Add a list of resource records and their details",
+            "items": {
+              "$ref": "#/components/schemas/InputResourceRecord"
+            }
+          },
+          "ttl": {
+            "type": "integer",
+            "description": "Specify a time to live value",
+            "format": "uint32",
+            "example": 300
+          }
+        }
+      },
+      "InputResourceRecord": {
+        "required": [
+          "content"
+        ],
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "array",
+            "description": "Specify the resource record content. Each record parameter must be a separate element of the array.",
+            "example": "[100, 1, 5061, \"site.com”]",
+            "items": {
+              "type": "object"
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Specify if the resource record should be enabled.\nNote: <lu>\n<li>The default value is <b>true</b></li>\n</lu>",
+            "example": true
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            },
+            "description": "Resource record metadata. Learn more about metadata <a href=\"https://apidocs.edgecenter.ru/dns#tag/RRsets\">here</a>",
+            "example": {
+              "countries": [
+                "ru",
+                "kz"
+              ]
+            }
+          }
+        }
+      },
+      "InputSecondaryZone": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Specify a base64 TSIG key value",
+            "example": "aGVsbG8gd29ybGQhMTIzNDU2"
+          },
+          "master": {
+            "type": "string",
+            "description": "Specify the ip address of the primary DNS server",
+            "example": "92.101.12.150"
+          },
+          "name": {
+            "type": "string",
+            "description": "Specify a TSIG key name in the format: keyName.zoneName",
+            "example": "key4.example.com"
+          }
+        }
+      },
+      "InputZone": {
+        "required": [
+          "idn_name",
+          "name"
+        ],
+        "type": "object",
+        "properties": {
+          "contact": {
+            "type": "string",
+            "description": "Email address of the zone administrator",
+            "example": "support.edgecenter.online."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Specify whether the zone should be enabled or disabled. When a zone is disabled, its records are not resolved by the DNS servers<br>\n\nNote: <lu>\n<li>The default value is <b>true</b></li>\n</lu>"
+          },
+          "expiry": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should stop responding to requests for this zone",
+            "format": "uint64",
+            "example": 1209600
+          },
+          "idn_name": {
+            "type": "string",
+            "description": "Enter the IDN zone name",
+            "example": "президент.рф"
+          },
+          "meta": {
+            "type": "object",
+            "description": "Specify additional zone data in json format.\nYou can specify a webhook url and a webhook_method here. The webhook will have a map of three arrays of RRsets: created, updated and deleted. If you omit the webhook method, POST will be used by default",
+            "example": "{\"webhook\": \"http://example.com/hook\",\"webhook_method\":\"PUT\"}"
+          },
+          "name": {
+            "type": "string",
+            "description": "Enter the zone name",
+            "example": "xn--d1abbgf6aiiy.xn--p1ai"
+          },
+          "nx_ttl": {
+            "type": "integer",
+            "description": "Time to live of negative cache",
+            "format": "uint64",
+            "example": 600
+          },
+          "primary_server": {
+            "type": "string",
+            "description": "Primary name server for the zone",
+            "example": "ns1.edgedns.online."
+          },
+          "refresh": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should check the primary name server's SOA record for zone changes",
+            "format": "uint64",
+            "example": 5400
+          },
+          "retry": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should try to request the serial number again",
+            "format": "uint64",
+            "example": 3600
+          },
+          "serial": {
+            "type": "integer",
+            "description": "Zone serial number or a zone update timestamp. If a secondary name server that is slaved to this one observes an increase in this number, the slave assumes that the zone has been updated and initiates a zone transfer",
+            "format": "uint64",
+            "example": 1680853417
+          }
+        }
+      },
+      "InvalidRRSet": {
+        "required": [
+          "idn_name",
+          "name",
+          "resource_records"
+        ],
+        "type": "object",
+        "properties": {
+          "ValidationErr": {
+            "type": "string"
+          },
+          "Warning": {
+            "type": "string"
+          },
+          "filter_set_id": {
+            "type": "integer",
+            "description": "You can either set id, if you have multiple rrset with same filters' set\nor include in rrset filter set itself.\nfilter_set_id has priority over filters",
+            "format": "uint64"
+          },
+          "filters": {
+            "type": "array",
+            "description": "Set of filters\nyou must set either filer_set_id of filters here otherwise rrset will be unusable",
+            "items": {
+              "$ref": "#/components/schemas/Filter"
+            }
+          },
+          "id": {
+            "type": "integer",
+            "description": "RRSet id",
+            "format": "uint64"
+          },
+          "idn_name": {
+            "type": "string",
+            "description": "RRSet IDN name",
+            "example": "тест.президент.рф"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "name": {
+            "type": "string",
+            "description": "RRSet name",
+            "example": "sub.example.com"
+          },
+          "resource_records": {
+            "type": "array",
+            "description": "List of resource record from rrset",
+            "items": {
+              "$ref": "#/components/schemas/ResourceRecord"
+            }
+          },
+          "ttl": {
+            "type": "integer",
+            "format": "uint32"
+          },
+          "type": {
+            "type": "string",
+            "description": "RRSet type",
+            "readOnly": true,
+            "enum": [
+              "A",
+              "AAAA",
+              "NS",
+              "CNAME",
+              "MX",
+              "TXT",
+              "SRV",
+              "SOA"
+            ]
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "zone_id": {
+            "type": "integer",
+            "format": "uint64"
+          }
+        },
+        "description": "InvalidRRSet"
+      },
+      "ItemRRSetResponse": {
+        "type": "object",
+        "properties": {
+          "rrset": {
+            "$ref": "#/components/schemas/OutputRRSet"
+          }
+        }
+      },
+      "ItemResourceRecordResponse": {
+        "type": "object",
+        "properties": {
+          "resource_record": {
+            "$ref": "#/components/schemas/ResourceRecord"
+          }
+        }
+      },
+      "ItemZoneResponse": {
+        "type": "object",
+        "properties": {
+          "zone": {
+            "$ref": "#/components/schemas/OutputZone"
+          }
+        },
+        "description": "Complete zone info with all records included"
+      },
+      "LastDelegationStatusResponse": {
+        "type": "object",
+        "properties": {
+          "result": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/UndelegatedZone"
+            }
+          }
+        },
+        "description": "LastDelegationStatusResponse"
+      },
+      "ListClientsResponse": {
+        "type": "object",
+        "properties": {
+          "clients": {
+            "type": "array",
+            "description": "List of clients and their DNS service details.",
+            "items": {
+              "$ref": "#/components/schemas/Client"
+            }
+          },
+          "total_amount": {
+            "type": "integer",
+            "description": "Total number of clients with requested parameters",
+            "format": "int64",
+            "example": 1
+          }
+        }
+      },
+      "ListOfResourceRecordsResponse": {
+        "type": "object",
+        "properties": {
+          "resource_records": {
+            "type": "array",
+            "description": "List of resource records and their details",
+            "items": {
+              "$ref": "#/components/schemas/OutputResourceRecordWithRRSet"
+            }
+          },
+          "total_amount": {
+            "type": "integer",
+            "description": "Total number of resource records",
+            "format": "int64",
+            "example": 1
+          }
+        }
+      },
+      "ListRRSetResponse": {
+        "type": "object",
+        "properties": {
+          "rrsets": {
+            "type": "array",
+            "description": "List of RRsets and their details",
+            "items": {
+              "$ref": "#/components/schemas/OutputRRSet"
+            }
+          },
+          "total_amount": {
+            "type": "integer",
+            "description": "Total number of RRsets",
+            "format": "int64",
+            "example": 1
+          }
+        }
+      },
+      "ListResourceRecordResponse": {
+        "type": "object",
+        "properties": {
+          "resource_records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceRecord"
+            }
+          }
+        }
+      },
+      "ListSecondaryZoneResponse": {
+        "type": "object",
+        "properties": {
+          "secondary_zones": {
+            "type": "array",
+            "description": "List of secondary zones and their details",
+            "items": {
+              "$ref": "#/components/schemas/OutputSecondaryZone"
+            }
+          },
+          "total_amount": {
+            "type": "integer",
+            "description": "Total number of secondary zones",
+            "format": "int64",
+            "example": 1
+          }
+        }
+      },
+      "ListZoneResponse": {
+        "type": "object",
+        "properties": {
+          "total_amount": {
+            "type": "integer",
+            "description": "Total number of zones with requested parameters",
+            "format": "int64",
+            "example": 1
+          },
+          "zones": {
+            "type": "array",
+            "description": "List of zones and their details",
+            "items": {
+              "$ref": "#/components/schemas/OutputZone"
+            }
+          }
+        }
+      },
+      "Meta": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": {
+          "type": "object"
+        },
+        "description": "Meta"
+      },
+      "MetaListResponse": {
+        "type": "object",
+        "properties": {
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          },
+          "total_amount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "NSZoneResponse": {
+        "type": "object",
+        "properties": {
+          "authoritative_name_servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NameServer"
+            }
+          }
+        },
+        "description": "NSZoneResponse"
+      },
+      "NameServer": {
+        "type": "object",
+        "properties": {
+          "ipv4Addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ipv6Addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "description": "NameServer"
+      },
+      "OutputFilter": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of records returned in the response",
+            "format": "int64",
+            "example": 1
+          },
+          "strict": {
+            "type": "boolean",
+            "description": "Indicates whether to return all records in the response if none match the filter.\nHas one of the values: <lu>\n<li><b>true</b> — only records matching the filter are returned in the response. If none match the filter, no records are returned</li>\n<li><b>false</b> — if no records match the filter, all records are returned in the response</li>\n</lu>\nLearn more about the field <a href=\"https://apidocs.edgecenter.ru/dns#tag/RRsets\">here</a>",
+            "example": true
+          },
+          "type": {
+            "type": "string",
+            "description": "Filter type.\nChoose any of the values: <lu>\n<li>geodns</li>\n<li>geodistance</li>\n<li>weighted_shuffle</li>\n<li>default</li>\n<li>first_n</li>\n<li>is_healthy</li>\n</lu>\nLearn more about the filters <a href=\"https://apidocs.edgecenter.ru/dns#tag/RRsets\">here</a>",
+            "example": "default"
+          }
+        }
+      },
+      "OutputRRSet": {
+        "type": "object",
+        "properties": {
+          "filter_set_id": {
+            "type": "integer",
+            "description": "For internal use",
+            "format": "uint64",
+            "example": 1
+          },
+          "filters": {
+            "type": "array",
+            "description": "Set of applied filters",
+            "items": {
+              "$ref": "#/components/schemas/OutputFilter"
+            }
+          },
+          "id": {
+            "type": "integer",
+            "description": "RRset ID",
+            "format": "uint64",
+            "example": 555
+          },
+          "idn_name": {
+            "type": "string",
+            "description": "IDN name",
+            "example": "sub.eedgecenter.online"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            },
+            "description": "RRset metadata.\nLearn more about metadata <a href=\"https://apidocs.edgecenter.ru/dns#tag/RRsets\">here</a>",
+            "example": {}
+          },
+          "name": {
+            "type": "string",
+            "description": "RRset name",
+            "example": "sub.eedgecenter.online"
+          },
+          "resource_records": {
+            "type": "array",
+            "description": "List of resource records and their details",
+            "items": {
+              "$ref": "#/components/schemas/OutputResourceRecord"
+            }
+          },
+          "ttl": {
+            "type": "integer",
+            "description": "Time to live value",
+            "format": "uint32",
+            "example": 300
+          },
+          "type": {
+            "type": "string",
+            "description": "RRSet type",
+            "example": "A"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "OutputResourceRecord": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "array",
+            "description": "Resource record content",
+            "example": [
+              "2.2.2.2"
+            ],
+            "items": {
+              "type": "object"
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shows if the resource record is enabled",
+            "example": true
+          },
+          "id": {
+            "type": "integer",
+            "description": "Resource record ID",
+            "format": "uint64",
+            "example": 55
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            },
+            "description": "Resource record metadata. Learn more about metadata <a href=\"https://apidocs.edgecenter.ru/dns#tag/RRsets\">here</a>",
+            "example": {
+              "countries": [
+                "ru",
+                "kz"
+              ]
+            }
+          }
+        }
+      },
+      "OutputResourceRecordWithRRSet": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "array",
+            "description": "Resource record content",
+            "example": [
+              "2.2.2.2"
+            ],
+            "items": {
+              "type": "object"
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shows if the resource record is enabled",
+            "example": true
+          },
+          "id": {
+            "type": "integer",
+            "description": "Resource record ID",
+            "format": "uint64",
+            "example": 55
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            },
+            "description": "Resource record metadata. Learn more about metadata <a href=\"https://apidocs.edgecenter.ru/dns#tag/RRsets\">here</a>",
+            "example": {
+              "countries": [
+                "ru",
+                "kz"
+              ]
+            }
+          },
+          "rrset": {
+            "$ref": "#/components/schemas/RRSetBrief"
+          }
+        }
+      },
+      "OutputSecondaryZone": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "ID of secondary DNS zone",
+            "format": "uint64",
+            "example": 33
+          },
+          "name": {
+            "type": "string",
+            "description": "Name of secondary DNS zone",
+            "example": "example.com"
+          },
+          "tsig": {
+            "$ref": "#/components/schemas/OutputTsig"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "OutputTsig": {
+        "type": "object",
+        "properties": {
+          "master": {
+            "type": "string",
+            "description": "Ip address of the primary DNS server",
+            "example": "92.101.12.150"
+          },
+          "name": {
+            "type": "string",
+            "description": "TSIG key name",
+            "example": "key4.example.com"
+          }
+        }
+      },
+      "OutputZone": {
+        "type": "object",
+        "properties": {
+          "contact": {
+            "type": "string",
+            "description": "Email address of the zone administrator",
+            "example": "support.edgecenter.online."
+          },
+          "delegated": {
+            "type": "boolean",
+            "description": "Shows if the zone is delegated or undelegated.\nHas one of the values: <ul>\n<li><b>true</b> — the zone is delegated </li>\n<li><b>false</b> —  the zone is undelegated </li>\n</ul>",
+            "example": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shows if the zone is enabled or disabled.\nHas one of the values: <ul>\n<li><b>true</b> — the zone is enabled </li>\n<li><b>false</b> —  the zone is disabled </li>\n</ul>",
+            "example": true
+          },
+          "expiry": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should stop responding to requests for this zone",
+            "format": "uint64",
+            "example": 1209600
+          },
+          "idn_name": {
+            "type": "string",
+            "description": "IDN zone name",
+            "example": "москва.рф"
+          },
+          "meta": {
+            "type": "object",
+            "description": "Additional zone data in json format",
+            "example": "{\"max_hosts\": 10, \"targeting\": \"country continent @ regiongroup region ip asn\"}"
+          },
+          "name": {
+            "type": "string",
+            "description": "Zone name",
+            "example": "xn--80adxhks.xn--p1ai"
+          },
+          "nx_ttl": {
+            "type": "integer",
+            "description": "Time to live of negative cache",
+            "format": "uint64",
+            "example": 600
+          },
+          "primary_server": {
+            "type": "string",
+            "description": "Primary name server for the zone",
+            "example": "ns1.edgedns.online."
+          },
+          "records": {
+            "type": "array",
+            "description": "List of records and their details",
+            "items": {
+              "$ref": "#/components/schemas/Record"
+            }
+          },
+          "refresh": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should check the primary name server's SOA record for zone changes",
+            "format": "uint64",
+            "example": 5400
+          },
+          "retry": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should try to request the serial number again",
+            "format": "uint64",
+            "example": 3600
+          },
+          "serial": {
+            "type": "integer",
+            "description": "Zone serial number or a zone update timestamp. If a secondary name server that is slaved to this one observes an increase in this number, the slave assumes that the zone has been updated and initiates a zone transfer",
+            "format": "uint64",
+            "example": 1680853417
+          }
+        },
+        "description": "Zone details"
+      },
+      "PublicIPListResponse": {
+        "type": "object",
+        "properties": {
+          "public_ip_list": {
+            "type": "array",
+            "description": "List of active DNS Failover IP addresses",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RRSet": {
+        "required": [
+          "idn_name",
+          "name",
+          "resource_records"
+        ],
+        "type": "object",
+        "properties": {
+          "Warning": {
+            "type": "string"
+          },
+          "filter_set_id": {
+            "type": "integer",
+            "description": "You can either set id, if you have multiple rrset with same filters' set\nor include in rrset filter set itself.\nfilter_set_id has priority over filters",
+            "format": "uint64"
+          },
+          "filters": {
+            "type": "array",
+            "description": "Set of filters\nyou must set either filer_set_id of filters here otherwise rrset will be unusable",
+            "items": {
+              "$ref": "#/components/schemas/Filter"
+            }
+          },
+          "id": {
+            "type": "integer",
+            "description": "RRSet id",
+            "format": "uint64"
+          },
+          "idn_name": {
+            "type": "string",
+            "description": "RRSet IDN name",
+            "example": "тест.президент.рф"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "name": {
+            "type": "string",
+            "description": "RRSet name",
+            "example": "sub.example.com"
+          },
+          "resource_records": {
+            "type": "array",
+            "description": "List of resource record from rrset",
+            "items": {
+              "$ref": "#/components/schemas/ResourceRecord"
+            }
+          },
+          "ttl": {
+            "type": "integer",
+            "format": "uint32"
+          },
+          "type": {
+            "type": "string",
+            "description": "RRSet type",
+            "readOnly": true,
+            "enum": [
+              "A",
+              "AAAA",
+              "NS",
+              "CNAME",
+              "MX",
+              "TXT",
+              "SRV",
+              "SOA"
+            ]
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "zone_id": {
+            "type": "integer",
+            "format": "uint64"
+          }
+        },
+        "description": "RRSet"
+      },
+      "RRSetBrief": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "RRset ID",
+            "format": "uint64",
+            "example": 555
+          },
+          "idn_name": {
+            "type": "string",
+            "description": "IDN name",
+            "example": "sub.eedgecenter.online"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object"
+            },
+            "description": "RRset metadata.\nLearn more about metadata <a href=\"https://apidocs.edgecenter.ru/dns#tag/RRsets\">here</a>",
+            "example": {}
+          },
+          "name": {
+            "type": "string",
+            "description": "RRset name",
+            "example": "sub.eedgecenter.online"
+          },
+          "ttl": {
+            "type": "integer",
+            "description": "Time to live value",
+            "format": "uint32",
+            "example": 300
+          },
+          "type": {
+            "type": "string",
+            "description": "RRSet type",
+            "example": "A"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "description": "Brief rrset content"
+      },
+      "RRsetsID": {
+        "required": [
+          "id"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "array",
+            "description": "RRset ids",
+            "example": [
+              1,
+              2,
+              3
+            ],
+            "items": {
+              "type": "integer",
+              "format": "uint64"
+            }
+          }
+        }
+      },
+      "Record": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Record name",
+            "example": "edgedns.online"
+          },
+          "short_answers": {
+            "type": "array",
+            "description": "List of record values",
+            "example": "[ns1.edgedns.online, ns2.edgedns.online]",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ttl": {
+            "type": "integer",
+            "description": "Time to live value",
+            "format": "uint32",
+            "example": 3600
+          },
+          "type": {
+            "type": "string",
+            "description": "Record type",
+            "example": "NS"
+          }
+        },
+        "description": "Record - readonly short version of rrset"
+      },
+      "RemainingLimitsForClientResponse": {
+        "type": "object",
+        "properties": {
+          "can_edit_contact": {
+            "type": "boolean",
+            "description": "Indicates whether the Email address of the zone administrator can be edited",
+            "example": true
+          },
+          "can_edit_primary_ns": {
+            "type": "boolean",
+            "description": "Indicates whether the primary name server can be edited",
+            "example": false
+          },
+          "exceeded_monitoring_rrsets": {
+            "type": "integer",
+            "description": "Number of RRsets that have exceeded the Failover monitoring limits",
+            "format": "int64",
+            "example": 1
+          },
+          "hard_limits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Limits that cannot be exceeded"
+          },
+          "max_rrset_size": {
+            "type": "integer",
+            "description": "Maximum number of resource records per RRset",
+            "format": "int64",
+            "example": 10
+          },
+          "min_monitoring_frequency": {
+            "type": "integer",
+            "description": "Minimal Failover monitoring frequency",
+            "format": "int64",
+            "example": 1
+          },
+          "min_ttl": {
+            "type": "integer",
+            "description": "Minimal TTL value",
+            "format": "int64",
+            "example": 60
+          },
+          "remaining_balancing_rrsets": {
+            "type": "integer",
+            "description": "Number of remaining RRsets where the balancing feature can be used",
+            "format": "int64",
+            "example": 1
+          },
+          "remaining_monitoring_rrsets": {
+            "type": "integer",
+            "description": "Number of remaining RRsets where the Failover monitoring can be used",
+            "format": "int64",
+            "example": 1
+          },
+          "soft_limits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Limits that can be exceeded"
+          }
+        }
+      },
+      "RemainingTariffLimits": {
+        "type": "object",
+        "properties": {
+          "can_edit_contact": {
+            "type": "boolean",
+            "description": "Indicates whether the Email address of the zone administrator can be edited",
+            "example": true
+          },
+          "can_edit_primary_ns": {
+            "type": "boolean",
+            "description": "Indicates whether the primary name server can be edited",
+            "example": false
+          },
+          "exceeded_monitoring_rrsets": {
+            "type": "integer",
+            "description": "Number of RRsets that have exceeded the Failover monitoring limits",
+            "format": "int64",
+            "example": 1
+          },
+          "hard_limits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Limits that cannot be exceeded"
+          },
+          "max_rrset_size": {
+            "type": "integer",
+            "description": "Maximum number of resource records per RRset",
+            "format": "int64",
+            "example": 10
+          },
+          "min_monitoring_frequency": {
+            "type": "integer",
+            "description": "Minimal Failover monitoring frequency",
+            "format": "int64",
+            "example": 1
+          },
+          "min_ttl": {
+            "type": "integer",
+            "description": "Minimal TTL value",
+            "format": "int64",
+            "example": 60
+          },
+          "remaining_balancing_rrsets": {
+            "type": "integer",
+            "description": "Number of remaining RRsets where the balancing feature can be used",
+            "format": "int64",
+            "example": 1
+          },
+          "remaining_monitoring_rrsets": {
+            "type": "integer",
+            "description": "Number of remaining RRsets where the Failover monitoring can be used",
+            "format": "int64",
+            "example": 1
+          },
+          "soft_limits": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Limits that can be exceeded"
+          }
+        }
+      },
+      "RenderZoneHashResponse": {
+        "type": "object",
+        "properties": {
+          "hash": {
+            "type": "string"
+          }
+        },
+        "description": "SHA256 hash of rendered zone"
+      },
+      "ResellerInfo": {
+        "type": "object",
+        "properties": {
+          "contact": {
+            "type": "string",
+            "description": "Email address of the zone administrator",
+            "example": "support@edgecenter.online"
+          },
+          "name_server_1": {
+            "type": "string",
+            "description": "Primary name server",
+            "example": "ns1.edgedns.ru"
+          },
+          "name_server_2": {
+            "type": "string",
+            "description": "Secondary name server",
+            "example": "ns2.edgedns.ru"
+          }
+        },
+        "description": "Name servers details"
+      },
+      "ResellerMe": {
+        "type": "object",
+        "properties": {
+          "available_features": {
+            "$ref": "#/components/schemas/ResourceRecordContent"
+          },
+          "default_enabled": {
+            "$ref": "#/components/schemas/ResourceRecordContent"
+          },
+          "id": {
+            "type": "integer",
+            "description": "Reseller’s account ID",
+            "format": "uint64",
+            "example": 1
+          }
+        }
+      },
+      "ResellerMeResponse": {
+        "type": "object",
+        "properties": {
+          "reseller": {
+            "$ref": "#/components/schemas/ResellerMe"
+          }
+        }
+      },
+      "ResourceRecord": {
+        "required": [
+          "content",
+          "rrset_id"
+        ],
+        "type": "object",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/ResourceRecordContent"
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "id": {
+            "type": "integer",
+            "format": "uint64"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "rrset_id": {
+            "type": "integer",
+            "format": "uint64"
+          }
+        },
+        "description": "ResourceRecord"
+      },
+      "ResourceRecordContent": {
+        "type": "array",
+        "description": "ResourceRecordContent",
+        "items": {
+          "type": "object"
+        }
+      },
+      "RevalidationResponse": {
+        "type": "object",
+        "properties": {
+          "rrsets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvalidRRSet"
+            }
+          }
+        }
+      },
+      "SecondaryZone": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "ID of secondary zone in database",
+            "format": "uint64"
+          },
+          "name": {
+            "type": "string",
+            "description": "Name of secondary DNS zone"
+          },
+          "tsig": {
+            "$ref": "#/components/schemas/TsigOptions"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "StartOfAuthorityRecord": {
+        "type": "object",
+        "properties": {
+          "contact": {
+            "type": "string",
+            "description": "Email address of the zone administrator",
+            "example": "support.edgecenter.online."
+          },
+          "expiry": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should stop responding to requests for this zone",
+            "format": "uint64",
+            "example": 1209600
+          },
+          "nx_ttl": {
+            "type": "integer",
+            "description": "Time to live of negative cache",
+            "format": "uint64",
+            "example": 600
+          },
+          "primary_server": {
+            "type": "string",
+            "description": "Primary name server for the zone",
+            "example": "ns1.edgedns.online."
+          },
+          "refresh": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should check the primary name server's SOA record for zone changes",
+            "format": "uint64",
+            "example": 5400
+          },
+          "retry": {
+            "type": "integer",
+            "description": "Number of seconds after which the secondary name servers should try to request the serial number again",
+            "format": "uint64",
+            "example": 3600
+          },
+          "serial": {
+            "type": "integer",
+            "description": "Zone serial number or a zone update timestamp. If a secondary name server that is slaved to this one observes an increase in this number, the slave assumes that the zone has been updated and initiates a zone transfer",
+            "format": "uint64",
+            "example": 1680853417
+          }
+        },
+        "description": "StartOfAuthorityRecord"
+      },
+      "StatisticsMetrics": {
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "requests": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        },
+        "description": "StatisticsMetrics"
+      },
+      "StatisticsZoneResponse": {
+        "type": "object",
+        "properties": {
+          "requests": {
+            "type": "object",
+            "description": "The number of requests per time interval, displayed in UNIX timestamp format"
+          },
+          "total": {
+            "type": "integer",
+            "description": "A total of all requests displayed in the output",
+            "format": "int64"
+          }
+        },
+        "description": "StatisticsZoneResponse"
+      },
+      "StatsFilters": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Specify the starting point of the required period in UNIX timestamp format.\nIf not specified, you will get statistics for up to one hour\n\nin: query",
+            "format": "date-time"
+          },
+          "granularity": {
+            "$ref": "#/components/schemas/Duration"
+          },
+          "name": {
+            "type": "string",
+            "description": "Zone name.\nEnter <b>all</b> to get statistics for all zones\n\nin: path"
+          },
+          "record_type": {
+            "type": "string",
+            "description": "Enter the DNS record type. You can add several types\n\nin: query",
+            "example": "a"
+          },
+          "to": {
+            "type": "string",
+            "description": "Specify the end of the required period in UNIX timestamp format.\nIf not specified, you will get statistics for up to one hour\n\nin: query",
+            "format": "date-time"
+          }
+        }
+      },
+      "SwitchStatusEndpointRes": {
+        "type": "object"
+      },
+      "SwitchTariffEndpointRes": {
+        "type": "object"
+      },
+      "TariffName": {
+        "type": "string",
+        "description": "Plan name"
+      },
+      "TechCreateRRSetResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "uint64"
+          },
+          "warnings": {
+            "$ref": "#/components/schemas/Warnings"
+          }
+        }
+      },
+      "TechDeleteRRSetResponse": {
+        "type": "object"
+      },
+      "TechItemRRSetResponse": {
+        "type": "object",
+        "properties": {
+          "rrset": {
+            "$ref": "#/components/schemas/RRSet"
+          }
+        }
+      },
+      "TechListRRSetResponse": {
+        "type": "object",
+        "properties": {
+          "rrsets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RRSet"
+            }
+          }
+        }
+      },
+      "TechUpdateRRSetResponse": {
+        "type": "object",
+        "properties": {
+          "warnings": {
+            "$ref": "#/components/schemas/Warnings"
+          }
+        }
+      },
+      "Timestamp": {
+        "type": "string",
+        "description": "Timestamp marshals/unmarshals  date and time as timestamp in json",
+        "format": "date-time"
+      },
+      "ToggleZoneFlagsResponse": {
+        "type": "object"
+      },
+      "TransferZoneResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "description": "TransferZoneResponse"
+      },
+      "TsigOptions": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Tsig key value"
+          },
+          "master": {
+            "type": "string",
+            "description": "Address of the primary DNS server"
+          },
+          "name": {
+            "type": "string",
+            "description": "Tsig key name"
+          }
+        },
+        "description": "TsigOptions"
+      },
+      "UndelegatedZone": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "uint64"
+          },
+          "last_scan_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateDefaultResellerResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "UpdateInfoResponse": {
+        "type": "object"
+      },
+      "UpdateRRSetResponse": {
+        "type": "object",
+        "properties": {
+          "RRSet": {
+            "$ref": "#/components/schemas/OutputRRSet"
+          }
+        }
+      },
+      "UpdateResellerAvailableFeaturesResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        }
+      },
+      "UpdateResourceRecordResponse": {
+        "type": "object"
+      },
+      "UpdateZoneResponse": {
+        "type": "object"
+      },
+      "Warnings": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "description": "Warnings - import warnings\nFor example: <lu>\n<li>\"already exists (1 record skipped)\"</li>\n<li>\"validation failed: rrset name test.local is invalid. RRSet must end with the domain name of the parent zone; (1 record skipped)\"</li>\n</lu>"
+      },
+      "ZoneBrief": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "ID of zone in database",
+            "format": "uint64"
+          },
+          "idn_name": {
+            "type": "string",
+            "description": "name of IDN zone"
+          },
+          "meta": {
+            "type": "object",
+            "description": "arbitrarily data of zone in json format"
+          },
+          "name": {
+            "type": "string",
+            "description": "name of DNS zone"
+          },
+          "render_updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "ZoneRenderResponse": {
+        "type": "object"
+      },
+      "ZoneResponse": {
+        "type": "object",
+        "properties": {
+          "rrsets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutputRRSet"
+            }
+          },
+          "total_amount": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "description": "ZoneResponse"
+      }
+    },
+    "responses": {
+      "CreatedEmptyResponse": {
+        "description": "Successful",
+        "content": {}
+      },
+      "EmptySuccessResponse": {
+        "description": "Successful.",
+        "content": {}
+      },
+      "ErrorMessage": {
+        "description": "Error message response",
+        "headers": {
+          "error": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {}
+      },
+      "ErrorResponse": {
+        "description": "Error message response",
+        "content": {}
+      },
+      "SuccessResponse": {
+        "description": "Successful.",
+        "content": {}
+      }
+    },
+    "securitySchemes": {
+      "APIKey": {
+        "type": "apiKey",
+        "description": "<div id=\"authDescription\"> To get access to our API, you need to have an account registered.<br> <a href=\"https://auth.edgecenter.ru/login/signup\">Sign up</a> if you dont have one.<br> <br> Most API requests require an API token which is a unique key that allows you to interact with our services.\n   Additionally, it helps the API check if the user is allowed to perform the action. <br>\n</div><br> Use a permanent <a href=\"https://accounts.edgecenter.ru/profile/api-tokens\">API token</a>\n      for regular automated requests. You can set its validity period when creating it or issue a token\n      for an unlimited time. Please address the API documentation of the specific product in order to check\n      if it supports API tokens.<br><br>\n         You can send only 5 requests per second.<br>\nTo manage services, add your permanent API token after <strong>APIKey</strong> in the <strong>Authorization</strong> header.<br>\n            <pre><code><span class=\"token string\">'Authorization: APIKey eyJ0eXAiOiJKV'</span></code></pre> <br><br>\n            <b>Important!</b> When authorizing via SAML SSO, be informed that our system does not have any information about\n            permissions given to the user by the identity provider. Even if the provider revokes the user's access rights,\n            their tokens remain active. Therefore, if necessary, the token will need to be deleted manually.",
+        "name": "Authorization",
+        "in": "header"
+      }
+    }
+  },
+  "x-original-swagger-version": "2.0"
+}

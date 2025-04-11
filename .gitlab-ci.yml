@@ -1,0 +1,13 @@
+include:
+  - project: 'infrastructure/shared-workflows'
+    ref: v0.0.35
+    file: '/workflows/build/docker-build.yml'
+
+variables:
+  DOCKER_REPO_NAME: "external-dns-edgecenter-webhook"
+
+stages:
+  - build
+
+build-and-push:
+  extends: .docker-build
