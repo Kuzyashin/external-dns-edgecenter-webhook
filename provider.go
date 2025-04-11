@@ -328,14 +328,6 @@ func (p *EdgeCenterProvider) getZoneAndRecordName(dnsName string, zoneNameMap ma
 	}
 
 	recordName := strings.TrimSuffix(dnsName, ".")
-
-	if recordName == longestMatch {
-		p.logger.Info("Found root zone record",
-			zap.String("zone", longestMatch),
-			zap.String("recordName", "@"))
-		return longestMatch, "@"
-	}
-
 	p.logger.Info("Found record name",
 		zap.String("zone", longestMatch),
 		zap.String("recordName", recordName))
