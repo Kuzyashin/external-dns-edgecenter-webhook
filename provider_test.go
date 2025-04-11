@@ -179,12 +179,13 @@ func TestEdgeCenterProvider_ApplyChanges_DryRun(t *testing.T) {
 func TestEdgeCenterProvider_getZoneAndRecordName(t *testing.T) {
 	mockClient := new(MockClient)
 	logger, _ := zap.NewDevelopment()
-	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
+	domainFilter := endpoint.NewDomainFilter([]string{"example.com", "test.example.com"})
 
 	provider, _ := NewEdgeCenterProvider(mockClient, domainFilter, logger, false)
 
 	zoneNameMap := map[string]string{
-		"example.com": "example.com",
+		"example.com":      "example.com",
+		"test.example.com": "test.example.com",
 	}
 
 	tests := []struct {
@@ -194,22 +195,52 @@ func TestEdgeCenterProvider_getZoneAndRecordName(t *testing.T) {
 		expectedRecord string
 	}{
 		{
-			name:           "Valid DNS name",
-			dnsName:        "test.example.com.",
+			name:           "Regular subdomain",
+			dnsName:        "sub.example.com.",
 			expectedZone:   "example.com",
-			expectedRecord: "test.example.com",
+			expectedRecord: "sub.example.com",
 		},
 		{
 			name:           "Root zone record",
 			dnsName:        "example.com.",
 			expectedZone:   "example.com",
-			expectedRecord: "@",
+			expectedRecord: "example.com",
 		},
 		{
-			name:           "Invalid DNS name",
+			name:           "Invalid zone",
 			dnsName:        "test.invalid.com.",
 			expectedZone:   "",
 			expectedRecord: "",
+		},
+		{
+			name:           "Nested zone record",
+			dnsName:        "sub.test.example.com.",
+			expectedZone:   "test.example.com",
+			expectedRecord: "sub.test.example.com",
+		},
+		{
+			name:           "Nested zone root record",
+			dnsName:        "test.example.com.",
+			expectedZone:   "test.example.com",
+			expectedRecord: "test.example.com",
+		},
+		{
+			name:           "ExternalDNS A-record in root zone",
+			dnsName:        "a-example.com.",
+			expectedZone:   "example.com",
+			expectedRecord: "a-example.com",
+		},
+		{
+			name:           "ExternalDNS A-record in nested zone",
+			dnsName:        "a-test.example.com.",
+			expectedZone:   "example.com",
+			expectedRecord: "a-test.example.com",
+		},
+		{
+			name:           "ExternalDNS A-record for nested zone record",
+			dnsName:        "a-sub.test.example.com.",
+			expectedZone:   "test.example.com",
+			expectedRecord: "a-sub.test.example.com",
 		},
 	}
 

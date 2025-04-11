@@ -297,39 +297,114 @@ func (p *EdgeCenterProvider) AdjustEndpoints(endpoints []*endpoint.Endpoint) []*
 	return endpoints
 }
 
-// getZoneAndRecordName returns the zone and record name for a given DNS name
+// getZoneAndRecordName returns the zone and record name for a given DNS name.
+// It selects the parent zone for TXT records that manage the zone itself (e.g., a-test.example.com for zone test.example.com)
+// and the most specific zone for all other records. It always returns the FQDN for the record name.
 func (p *EdgeCenterProvider) getZoneAndRecordName(dnsName string, zoneNameMap map[string]string) (string, string) {
 	p.logger.Info("Finding zone and record name", zap.String("dnsName", dnsName))
 
-	if !strings.HasSuffix(dnsName, ".") {
-		dnsName = dnsName + "."
-		p.logger.Info("Added trailing dot to DNS name", zap.String("dnsName", dnsName))
+	originalDNSName := dnsName // Keep original for processing and logging
+
+	// Normalize input dnsName
+	dnsNameWithDot := originalDNSName
+	if !strings.HasSuffix(dnsNameWithDot, ".") {
+		dnsNameWithDot = dnsNameWithDot + "."
+		p.logger.Info("Added trailing dot to DNS name", zap.String("correctedDNSName", dnsNameWithDot))
 	}
 
-	var longestMatch string
+	var bestMatch string
+	var longestMatch string = ""
 	longestLength := 0
+	var shortestMatch string = ""
+	shortestLength := -1
 
-	for zoneName := range zoneNameMap {
-		zoneWithDot := zoneName + "."
-		if strings.HasSuffix(dnsName, zoneWithDot) {
-			if len(zoneName) > longestLength {
-				longestMatch = zoneName
-				longestLength = len(zoneName)
-				p.logger.Info("Found matching zone",
-					zap.String("zone", zoneName),
-					zap.String("dnsName", dnsName))
+	// --- Determine if it's a TXT record for the zone itself ---
+	isZoneTxtRecord := false
+	managedZoneName := "" // The zone name potentially managed by this TXT record
+
+	prefixes := []string{"a-", "aaaa-", "cname-", "txt-", "mx-", "ns-"} // Standard external-dns prefixes
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(originalDNSName, prefix) {
+			potentialManagedZone := strings.TrimPrefix(originalDNSName, prefix)
+			potentialManagedZone = strings.TrimSuffix(potentialManagedZone, ".")
+			if _, ok := zoneNameMap[potentialManagedZone]; ok {
+				// It matches the pattern prefix-<zone_in_map>
+				isZoneTxtRecord = true
+				managedZoneName = potentialManagedZone
+				p.logger.Debug("Detected TXT record potentially managing a zone",
+					zap.String("dnsName", originalDNSName),
+					zap.String("managedZone", managedZoneName))
+				break
 			}
 		}
 	}
 
-	if longestLength == 0 {
-		p.logger.Info("No matching zone found", zap.String("dnsName", dnsName))
+	// --- Find the best matching zone based on the record type ---
+	if isZoneTxtRecord {
+		// Find the SHORTEST zone that is a suffix (the parent zone)
+		p.logger.Debug("Applying SHORTEST zone logic for zone TXT record")
+		for zoneName := range zoneNameMap {
+			// Skip the zone that the TXT record is managing itself
+			if zoneName == managedZoneName {
+				continue
+			}
+			zoneWithDot := zoneName + "."
+			if strings.HasSuffix(dnsNameWithDot, zoneWithDot) {
+				if shortestLength == -1 || len(zoneName) < shortestLength {
+					shortestMatch = zoneName
+					shortestLength = len(zoneName)
+					p.logger.Debug("Found potential shortest (parent) zone", zap.String("zone", zoneName), zap.String("dnsName", originalDNSName))
+				}
+			}
+		}
+		if shortestLength != -1 {
+			bestMatch = shortestMatch
+		} else {
+			// Fallback if no shorter zone found (e.g., only the managed zone itself is in the map) - this might indicate an issue
+			p.logger.Warn("Could not find a shorter parent zone for zone TXT record, falling back to longest match logic", zap.String("dnsName", originalDNSName), zap.String("managedZone", managedZoneName))
+			// Proceed to longest match logic below as a fallback
+		}
+	}
+
+	// If not a zone TXT record OR fallback needed, find the LONGEST zone
+	if bestMatch == "" {
+		if !isZoneTxtRecord {
+			p.logger.Debug("Applying LONGEST zone logic for regular record")
+		}
+		for zoneName := range zoneNameMap {
+			zoneWithDot := zoneName + "."
+			if strings.HasSuffix(dnsNameWithDot, zoneWithDot) {
+				if len(zoneName) > longestLength {
+					longestMatch = zoneName
+					longestLength = len(zoneName)
+					p.logger.Debug("Found potential longest zone", zap.String("zone", zoneName), zap.String("dnsName", originalDNSName))
+				}
+			}
+		}
+		if longestLength > 0 {
+			bestMatch = longestMatch
+		}
+	}
+
+	// --- Handle result ---
+	if bestMatch == "" {
+		p.logger.Warn("No matching zone found", zap.String("dnsName", originalDNSName))
 		return "", ""
 	}
 
-	recordName := strings.TrimSuffix(dnsName, ".")
-	p.logger.Info("Found record name",
-		zap.String("zone", longestMatch),
+	p.logger.Info("Selected matching zone",
+		zap.String("zone", bestMatch),
+		zap.String("dnsName", originalDNSName),
+		zap.Bool("isZoneTxtRecord", isZoneTxtRecord),
+	)
+
+	// Убираем точку в конце из исходного имени для возврата
+	recordName := strings.TrimSuffix(originalDNSName, ".")
+	// Зону тоже возвращаем без точки
+	bestMatch = strings.TrimSuffix(bestMatch, ".")
+
+	p.logger.Info("Returning result",
+		zap.String("zone", bestMatch),
 		zap.String("recordName", recordName))
-	return longestMatch, recordName
+	return bestMatch, recordName
 }
