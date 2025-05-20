@@ -117,6 +117,65 @@ func TestWebhookServer_handleRecords(t *testing.T) {
 	provider.AssertExpectations(t)
 }
 
+func TestWebhookServer_handleRecords_Post(t *testing.T) {
+	provider := new(MockProvider)
+	logger, _ := zap.NewDevelopment()
+	server := NewWebhookServer(provider, logger)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			{
+				DNSName:    "create.example.com",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"192.0.2.5"},
+			},
+		},
+	}
+
+	// Настроим провайдер на ожидание вызова ApplyChanges
+	provider.On("ApplyChanges", mock.Anything, changes).Return(nil)
+
+	body, _ := json.Marshal(changes)
+	req := httptest.NewRequest(http.MethodPost, "/records", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	server.handleRecords(w, req)
+
+	// Проверяем статус NoContent и что ApplyChanges был вызван
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	provider.AssertExpectations(t)
+}
+
+func TestWebhookServer_handleRecords_Post_Error(t *testing.T) {
+	provider := new(MockProvider)
+	logger, _ := zap.NewDevelopment()
+	server := NewWebhookServer(provider, logger)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			{
+				DNSName:    "error.example.com",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"192.0.2.6"},
+			},
+		},
+	}
+
+	// Настроим провайдер на возврат ошибки при вызове ApplyChanges
+	expectedError := assert.AnError // Используем стандартную ошибку для теста
+	provider.On("ApplyChanges", mock.Anything, changes).Return(expectedError)
+
+	body, _ := json.Marshal(changes)
+	req := httptest.NewRequest(http.MethodPost, "/records", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	server.handleRecords(w, req)
+
+	// Проверяем статус InternalServerError
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	provider.AssertExpectations(t)
+}
+
 func TestWebhookServer_handleAdjustEndpoints(t *testing.T) {
 	provider := new(MockProvider)
 	logger, _ := zap.NewDevelopment()

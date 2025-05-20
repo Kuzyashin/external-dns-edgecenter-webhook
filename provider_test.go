@@ -42,7 +42,7 @@ func TestNewEdgeCenterProvider(t *testing.T) {
 	logger, _ := zap.NewDevelopment()
 	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
 
-	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false)
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
 	assert.NoError(t, err)
 	assert.NotNil(t, provider)
 }
@@ -52,7 +52,7 @@ func TestEdgeCenterProvider_Records(t *testing.T) {
 	mockClient := new(MockClient)
 	logger := zap.NewNop()
 	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
-	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false)
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
 	assert.NoError(t, err)
 
 	// Настройка мока
@@ -107,7 +107,7 @@ func TestEdgeCenterProvider_ApplyChanges(t *testing.T) {
 	mockClient := new(MockClient)
 	logger := zap.NewNop()
 	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
-	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false)
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
 	assert.NoError(t, err)
 
 	// Настройка мока для Zones
@@ -129,8 +129,10 @@ func TestEdgeCenterProvider_ApplyChanges(t *testing.T) {
 		},
 	}
 
-	// Настройка мока для AddZoneRRSet
-	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "test.example.com", "A", mock.Anything, 3600, mock.Anything).Return(nil)
+	// Настройка мока для AddZoneRRSet - ожидаем слайс с одной записью
+	expectedRecord := dnssdk.ToRecordType("A", "192.0.2.1")
+	expectedRecords := []dnssdk.ResourceRecord{{Content: expectedRecord.ToContent(), Enabled: true}}
+	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "test.example.com", "A", expectedRecords, 3600, mock.Anything).Return(nil)
 
 	// Действие
 	err = provider.ApplyChanges(context.Background(), changes)
@@ -145,7 +147,7 @@ func TestEdgeCenterProvider_ApplyChanges_DryRun(t *testing.T) {
 	mockClient := new(MockClient)
 	logger := zap.NewNop()
 	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
-	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, true)
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, true, 600)
 	assert.NoError(t, err)
 
 	// Настройка мока для Zones
@@ -176,12 +178,90 @@ func TestEdgeCenterProvider_ApplyChanges_DryRun(t *testing.T) {
 	mockClient.AssertNotCalled(t, "AddZoneRRSet")
 }
 
+func TestEdgeCenterProvider_ApplyChanges_Update(t *testing.T) {
+	// Подготовка
+	mockClient := new(MockClient)
+	logger := zap.NewNop()
+	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
+	assert.NoError(t, err)
+
+	// Настройка мока для Zones
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{
+		{
+			Name: "example.com",
+		},
+	}, nil)
+
+	// Создаем тестовые изменения
+	changes := &plan.Changes{
+		UpdateNew: []*endpoint.Endpoint{
+			{
+				DNSName:    "update.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"192.0.2.10"},
+				RecordTTL:  endpoint.TTL(600),
+			},
+		},
+	}
+
+	// Настройка мока для DeleteRRSet (для старой записи)
+	mockClient.On("DeleteRRSet", mock.Anything, "example.com", "update.example.com", "A").Return(nil)
+	// Настройка мока для AddZoneRRSet (для новой записи) - ожидаем слайс с одной записью
+	expectedNewRecord := dnssdk.ToRecordType("A", "192.0.2.10")
+	expectedNewRecords := []dnssdk.ResourceRecord{{Content: expectedNewRecord.ToContent(), Enabled: true}}
+	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "update.example.com", "A", expectedNewRecords, 600, mock.Anything).Return(nil)
+
+	// Действие
+	err = provider.ApplyChanges(context.Background(), changes)
+
+	// Проверка
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t) // Проверяем, что оба вызова (Delete и Add) были сделаны
+}
+
+func TestEdgeCenterProvider_ApplyChanges_Delete(t *testing.T) {
+	// Подготовка
+	mockClient := new(MockClient)
+	logger := zap.NewNop()
+	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
+	assert.NoError(t, err)
+
+	// Настройка мока для Zones
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{
+		{
+			Name: "example.com",
+		},
+	}, nil)
+
+	// Создаем тестовые изменения
+	changes := &plan.Changes{
+		Delete: []*endpoint.Endpoint{
+			{
+				DNSName:    "delete.example.com.",
+				RecordType: "A",
+			},
+		},
+	}
+
+	// Настройка мока для DeleteRRSet
+	mockClient.On("DeleteRRSet", mock.Anything, "example.com", "delete.example.com", "A").Return(nil)
+
+	// Действие
+	err = provider.ApplyChanges(context.Background(), changes)
+
+	// Проверка
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t) // Проверяем, что Delete был вызван
+}
+
 func TestEdgeCenterProvider_getZoneAndRecordName(t *testing.T) {
 	mockClient := new(MockClient)
 	logger, _ := zap.NewDevelopment()
 	domainFilter := endpoint.NewDomainFilter([]string{"example.com", "test.example.com"})
 
-	provider, _ := NewEdgeCenterProvider(mockClient, domainFilter, logger, false)
+	provider, _ := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
 
 	zoneNameMap := map[string]string{
 		"example.com":      "example.com",
@@ -241,6 +321,24 @@ func TestEdgeCenterProvider_getZoneAndRecordName(t *testing.T) {
 			dnsName:        "a-sub.test.example.com.",
 			expectedZone:   "test.example.com",
 			expectedRecord: "a-sub.test.example.com",
+		},
+		{
+			name:           "TXT record managing nested zone itself (should use parent)",
+			dnsName:        "txt-test.example.com.",
+			expectedZone:   "example.com", // Expects the parent zone
+			expectedRecord: "txt-test.example.com",
+		},
+		{
+			name:           "TXT record managing root zone itself (no parent in map - fallback to longest)",
+			dnsName:        "txt-example.com.",
+			expectedZone:   "example.com", // Fallback to longest match
+			expectedRecord: "txt-example.com",
+		},
+		{
+			name:           "Regular TXT record in nested zone",
+			dnsName:        "myrecord.test.example.com.",
+			expectedZone:   "test.example.com", // Should use the nested zone
+			expectedRecord: "myrecord.test.example.com",
 		},
 	}
 

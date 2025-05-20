@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	dnssdk "github.com/Edge-Center/edgecenter-dns-sdk-go"
@@ -48,7 +49,23 @@ func main() {
 		logger.Info("Running in dry-run mode")
 	}
 
-	provider, err := NewEdgeCenterProvider(client, domainFilter, logger, dryRun)
+	// Read and parse DEFAULT_TTL
+	defaultTTLStr := os.Getenv("DEFAULT_TTL")
+	var defaultTTL int
+	if defaultTTLStr == "" {
+		defaultTTL = 600 // Default value if env var is not set
+		logger.Info("DEFAULT_TTL not set, using default", zap.Int("value", defaultTTL))
+	} else {
+		defaultTTL, err = strconv.Atoi(defaultTTLStr)
+		if err != nil || defaultTTL <= 0 {
+			logger.Warn("Invalid DEFAULT_TTL value, using default 600", zap.String("value", defaultTTLStr), zap.Error(err))
+			defaultTTL = 600
+		} else {
+			logger.Info("Using custom DEFAULT_TTL", zap.Int("value", defaultTTL))
+		}
+	}
+
+	provider, err := NewEdgeCenterProvider(client, domainFilter, logger, dryRun, defaultTTL)
 	if err != nil {
 		logger.Fatal("Error creating EdgeCenter provider", zap.Error(err))
 	}

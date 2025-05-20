@@ -41,13 +41,13 @@ spec:
             memory: 64Mi
         livenessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8888
           initialDelaySeconds: 5
           periodSeconds: 10
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /health
             port: 8888
           initialDelaySeconds: 5
           periodSeconds: 10

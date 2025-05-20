@@ -33,15 +33,17 @@ type EdgeCenterProvider struct {
 	domainFilter endpoint.DomainFilter
 	logger       *zap.Logger
 	dryRun       bool
+	defaultTTL   int
 }
 
 // NewEdgeCenterProvider creates a new EdgeCenter DNS provider
-func NewEdgeCenterProvider(client DNSClient, domainFilter endpoint.DomainFilter, logger *zap.Logger, dryRun bool) (Provider, error) {
+func NewEdgeCenterProvider(client DNSClient, domainFilter endpoint.DomainFilter, logger *zap.Logger, dryRun bool, defaultTTL int) (Provider, error) {
 	return &EdgeCenterProvider{
 		client:       client,
 		domainFilter: domainFilter,
 		logger:       logger,
 		dryRun:       dryRun,
+		defaultTTL:   defaultTTL,
 	}, nil
 }
 
@@ -53,7 +55,13 @@ func (p *EdgeCenterProvider) GetDomainFilter() []string {
 // Records returns the list of records in all relevant zones
 func (p *EdgeCenterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	p.logger.Info("Fetching DNS records from EdgeCenter")
-	zones, err := p.client.Zones(ctx)
+	// Apply server-side filtering based on domainFilter
+	zones, err := p.client.Zones(ctx, func(filter *dnssdk.ZonesFilter) {
+		if len(p.domainFilter.Filters) > 0 {
+			filter.Names = p.domainFilter.Filters
+			p.logger.Info("Applying server-side zone filter", zap.Strings("filters", p.domainFilter.Filters))
+		}
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get zones: %w", err)
 	}
@@ -63,10 +71,11 @@ func (p *EdgeCenterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint,
 	zoneNameMap := make(map[string]string)
 
 	for _, zone := range zones {
-		if !p.domainFilter.Match(zone.Name) {
-			p.logger.Info("Skipping zone - not in domain filter", zap.String("zone", zone.Name))
-			continue
-		}
+		// No need for client-side filtering anymore
+		// if !p.domainFilter.Match(zone.Name) {
+		// 	p.logger.Info("Skipping zone - not in domain filter", zap.String("zone", zone.Name))
+		// 	continue
+		// }
 		p.logger.Info("Processing zone", zap.String("zone", zone.Name))
 		zoneNameMap[zone.Name] = zone.Name
 
@@ -159,17 +168,41 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 
 		ttl := int(change.RecordTTL)
 		if ttl == 0 {
-			ttl = 600 // Default TTL
-			p.logger.Info("Using default TTL", zap.Int("ttl", ttl))
+			ttl = p.defaultTTL // Use configured default TTL
+			p.logger.Info("Using configured default TTL", zap.Int("ttl", ttl))
 		}
 
-		content := dnssdk.ToRecordType(change.RecordType, change.Targets[0])
+		// Prepare resource records from all targets
+		resourceRecords := make([]dnssdk.ResourceRecord, 0, len(change.Targets))
+		for _, target := range change.Targets {
+			content := dnssdk.ToRecordType(change.RecordType, target)
+			if content == nil { // Handle potential nil from ToRecordType if type/target combo is invalid
+				p.logger.Error("Failed to convert target to record content",
+					zap.String("type", change.RecordType),
+					zap.String("target", target))
+				// Depending on desired behavior, we might skip this target or the whole RRset
+				// For now, let's skip the target
+				continue
+			}
+			resourceRecords = append(resourceRecords, dnssdk.ResourceRecord{
+				Content: content.ToContent(),
+				Enabled: true,
+			})
+		}
+
+		if len(resourceRecords) == 0 {
+			p.logger.Warn("No valid resource records could be created for endpoint",
+				zap.String("dnsName", change.DNSName),
+				zap.String("type", change.RecordType))
+			continue
+		}
+
 		if p.dryRun {
 			p.logger.Info("Would create record (dry-run)",
 				zap.String("zone", zoneName),
 				zap.String("record", recordName),
 				zap.String("type", change.RecordType),
-				zap.Any("content", content.ToContent()),
+				zap.Any("records", resourceRecords),
 				zap.Int("ttl", ttl))
 			continue
 		}
@@ -179,12 +212,10 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 			zap.String("zone", zoneName),
 			zap.String("record", recordName),
 			zap.String("type", change.RecordType),
-			zap.Any("content", content.ToContent()),
+			zap.Any("records", resourceRecords),
 			zap.Int("ttl", ttl))
 
-		err := p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, []dnssdk.ResourceRecord{
-			{Content: content.ToContent(), Enabled: true},
-		}, ttl)
+		err := p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, resourceRecords, ttl)
 		if err != nil {
 			return fmt.Errorf("failed to create record %s: %v", change.DNSName, err)
 		}
@@ -210,46 +241,74 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 
 		ttl := int(change.RecordTTL)
 		if ttl == 0 {
-			ttl = 600 // Default TTL
-			p.logger.Info("Using default TTL for update", zap.Int("ttl", ttl))
+			ttl = p.defaultTTL // Use configured default TTL for update
+			p.logger.Info("Using configured default TTL for update", zap.Int("ttl", ttl))
 		}
 
-		if p.dryRun {
+		// Prepare resource records from all new targets
+		newResourceRecords := make([]dnssdk.ResourceRecord, 0, len(change.Targets))
+		for _, target := range change.Targets {
+			content := dnssdk.ToRecordType(change.RecordType, target)
+			if content == nil {
+				p.logger.Error("Failed to convert target to record content for update",
+					zap.String("type", change.RecordType),
+					zap.String("target", target))
+				continue
+			}
+			newResourceRecords = append(newResourceRecords, dnssdk.ResourceRecord{
+				Content: content.ToContent(),
+				Enabled: true,
+			})
+		}
+
+		if len(newResourceRecords) == 0 {
+			p.logger.Warn("No valid new resource records could be created for endpoint update",
+				zap.String("dnsName", change.DNSName),
+				zap.String("type", change.RecordType))
+			// Still need to delete the old one if dryRun is false
+			// Let the delete logic below handle it, but don't attempt to add.
+		} else if p.dryRun {
 			p.logger.Info("Would update record (dry-run)",
 				zap.String("zone", zoneName),
 				zap.String("record", recordName),
 				zap.String("type", change.RecordType),
-				zap.Strings("targets", change.Targets),
+				zap.Any("newRecords", newResourceRecords),
 				zap.Int("ttl", ttl))
 			continue
 		}
 
-		p.logger.Info("Deleting old record for update",
-			zap.String("zone", zoneName),
-			zap.String("record", recordName),
-			zap.String("type", change.RecordType))
+		if !p.dryRun {
+			p.logger.Info("Deleting old record for update",
+				zap.String("zone", zoneName),
+				zap.String("record", recordName),
+				zap.String("type", change.RecordType))
 
-		err := p.client.DeleteRRSet(ctx, zoneName, recordName, change.RecordType)
-		if err != nil {
-			return fmt.Errorf("failed to delete old record %s: %v", change.DNSName, err)
+			err := p.client.DeleteRRSet(ctx, zoneName, recordName, change.RecordType)
+			if err != nil {
+				// Log error but continue, maybe adding the new one will fix it?
+				// Or return error? For now, log and continue.
+				p.logger.Error("failed to delete old record during update, proceeding to add new",
+					zap.String("record", change.DNSName),
+					zap.Error(err))
+			}
+
+			if len(newResourceRecords) > 0 {
+				p.logger.Info("Creating new record for update",
+					zap.String("zone", zoneName),
+					zap.String("record", recordName),
+					zap.String("type", change.RecordType),
+					zap.Any("records", newResourceRecords),
+					zap.Int("ttl", ttl))
+
+				err = p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, newResourceRecords, ttl)
+				if err != nil {
+					return fmt.Errorf("failed to add new record during update for %s: %v", change.DNSName, err)
+				}
+				p.logger.Info("Successfully updated DNS record by replacing",
+					zap.String("zone", zoneName),
+					zap.String("record", recordName))
+			}
 		}
-
-		content := dnssdk.ToRecordType(change.RecordType, change.Targets[0])
-		p.logger.Info("Creating new record for update",
-			zap.String("zone", zoneName),
-			zap.String("record", recordName),
-			zap.String("type", change.RecordType),
-			zap.Any("content", content.ToContent()))
-
-		err = p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, []dnssdk.ResourceRecord{
-			{Content: content.ToContent(), Enabled: true},
-		}, ttl)
-		if err != nil {
-			return fmt.Errorf("failed to update record %s: %v", change.DNSName, err)
-		}
-		p.logger.Info("Successfully updated DNS record",
-			zap.String("zone", zoneName),
-			zap.String("record", recordName))
 	}
 
 	// Обработка удаления записей
