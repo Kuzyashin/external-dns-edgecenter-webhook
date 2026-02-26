@@ -193,8 +193,16 @@ func TestEdgeCenterProvider_ApplyChanges_Update(t *testing.T) {
 		},
 	}, nil)
 
-	// Создаем тестовые изменения
+	// Создаем тестовые изменения — targets реально изменились
 	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{
+			{
+				DNSName:    "update.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"192.0.2.1"},
+				RecordTTL:  endpoint.TTL(600),
+			},
+		},
 		UpdateNew: []*endpoint.Endpoint{
 			{
 				DNSName:    "update.example.com.",
@@ -218,6 +226,128 @@ func TestEdgeCenterProvider_ApplyChanges_Update(t *testing.T) {
 	// Проверка
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t) // Проверяем, что оба вызова (Delete и Add) были сделаны
+}
+
+func TestEdgeCenterProvider_ApplyChanges_UpdateSkipUnchanged(t *testing.T) {
+	// Подготовка
+	mockClient := new(MockClient)
+	logger := zap.NewNop()
+	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
+	assert.NoError(t, err)
+
+	// Настройка мока для Zones
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{
+		{
+			Name: "example.com",
+		},
+	}, nil)
+
+	// UpdateOld и UpdateNew идентичны — ничего не должно вызываться
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{
+			{
+				DNSName:    "same.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"192.0.2.1"},
+				RecordTTL:  endpoint.TTL(600),
+			},
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			{
+				DNSName:    "same.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"192.0.2.1"},
+				RecordTTL:  endpoint.TTL(600),
+			},
+		},
+	}
+
+	// Действие
+	err = provider.ApplyChanges(context.Background(), changes)
+
+	// Проверка — API не дёргался
+	assert.NoError(t, err)
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+	mockClient.AssertNotCalled(t, "AddZoneRRSet")
+}
+
+func TestEdgeCenterProvider_ApplyChanges_UpdateSkipUnchangedMultiTarget(t *testing.T) {
+	mockClient := new(MockClient)
+	logger := zap.NewNop()
+	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
+	assert.NoError(t, err)
+
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{
+		{Name: "example.com"},
+	}, nil)
+
+	// Те же targets но в разном порядке — должен пропустить
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{
+			{
+				DNSName:    "multi.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"10.0.0.1", "10.0.0.2", "10.0.0.3"},
+				RecordTTL:  endpoint.TTL(300),
+			},
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			{
+				DNSName:    "multi.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"10.0.0.3", "10.0.0.1", "10.0.0.2"},
+				RecordTTL:  endpoint.TTL(300),
+			},
+		},
+	}
+
+	err = provider.ApplyChanges(context.Background(), changes)
+	assert.NoError(t, err)
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+	mockClient.AssertNotCalled(t, "AddZoneRRSet")
+}
+
+func TestEdgeCenterProvider_ApplyChanges_UpdateOnTTLChange(t *testing.T) {
+	mockClient := new(MockClient)
+	logger := zap.NewNop()
+	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
+	assert.NoError(t, err)
+
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{
+		{Name: "example.com"},
+	}, nil)
+
+	// Те же targets, но TTL изменился — должен обновить
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{
+			{
+				DNSName:    "ttl.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"10.0.0.1"},
+				RecordTTL:  endpoint.TTL(300),
+			},
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			{
+				DNSName:    "ttl.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"10.0.0.1"},
+				RecordTTL:  endpoint.TTL(600),
+			},
+		},
+	}
+
+	mockClient.On("DeleteRRSet", mock.Anything, "example.com", "ttl.example.com", "A").Return(nil)
+	expectedRecord := dnssdk.ToRecordType("A", "10.0.0.1")
+	expectedRecords := []dnssdk.ResourceRecord{{Content: expectedRecord.ToContent(), Enabled: true}}
+	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "ttl.example.com", "A", expectedRecords, 600, mock.Anything).Return(nil)
+
+	err = provider.ApplyChanges(context.Background(), changes)
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
 }
 
 func TestEdgeCenterProvider_ApplyChanges_Delete(t *testing.T) {

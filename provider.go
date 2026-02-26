@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	dnssdk "github.com/Edge-Center/edgecenter-dns-sdk-go"
@@ -25,6 +26,29 @@ type Provider interface {
 	ApplyChanges(ctx context.Context, changes *plan.Changes) error
 	AdjustEndpoints(endpoints []*endpoint.Endpoint) []*endpoint.Endpoint
 	GetDomainFilter() []string
+}
+
+// endpointsEqual проверяет, совпадают ли targets и TTL двух endpoint'ов.
+// Если всё идентично — обновление не требуется.
+func endpointsEqual(a, b *endpoint.Endpoint) bool {
+	if a.RecordTTL != b.RecordTTL {
+		return false
+	}
+	if len(a.Targets) != len(b.Targets) {
+		return false
+	}
+	aSorted := make([]string, len(a.Targets))
+	bSorted := make([]string, len(b.Targets))
+	copy(aSorted, a.Targets)
+	copy(bSorted, b.Targets)
+	sort.Strings(aSorted)
+	sort.Strings(bSorted)
+	for i := range aSorted {
+		if aSorted[i] != bSorted[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // EdgeCenterProvider implements the ExternalDNS provider interface for EdgeCenter DNS
@@ -225,11 +249,22 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 	}
 
 	// Обработка обновления записей
-	for _, change := range changes.UpdateNew {
+	for i, change := range changes.UpdateNew {
 		p.logger.Info("Processing update request",
 			zap.String("dnsName", change.DNSName),
 			zap.String("type", change.RecordType),
 			zap.Strings("targets", change.Targets))
+
+		// Сравниваем со старой записью — если targets и TTL не изменились, пропускаем
+		if i < len(changes.UpdateOld) {
+			old := changes.UpdateOld[i]
+			if endpointsEqual(old, change) {
+				p.logger.Info("Skipping update, record unchanged",
+					zap.String("dnsName", change.DNSName),
+					zap.String("type", change.RecordType))
+				continue
+			}
+		}
 
 		zoneName, recordName := p.getZoneAndRecordName(change.DNSName, zoneNameMap)
 		if zoneName == "" {
@@ -265,8 +300,6 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 			p.logger.Warn("No valid new resource records could be created for endpoint update",
 				zap.String("dnsName", change.DNSName),
 				zap.String("type", change.RecordType))
-			// Still need to delete the old one if dryRun is false
-			// Let the delete logic below handle it, but don't attempt to add.
 		} else if p.dryRun {
 			p.logger.Info("Would update record (dry-run)",
 				zap.String("zone", zoneName),
@@ -285,8 +318,6 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 
 			err := p.client.DeleteRRSet(ctx, zoneName, recordName, change.RecordType)
 			if err != nil {
-				// Log error but continue, maybe adding the new one will fix it?
-				// Or return error? For now, log and continue.
 				p.logger.Error("failed to delete old record during update, proceeding to add new",
 					zap.String("record", change.DNSName),
 					zap.Error(err))
