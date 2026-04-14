@@ -176,7 +176,7 @@ kind: Ingress
 metadata:
   annotations:
     external-dns.alpha.kubernetes.io/target-provider: edgecenter
-    external-dns.alpha.kubernetes.io/edgecenter-geodns: |
+    external-dns.alpha.kubernetes.io/webhook-edgecenter-geodns: |
       [{"targets":["168.119.120.9"],"countries":["ae","de","nl"]}]
 spec:
   rules:

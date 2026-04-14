@@ -495,7 +495,7 @@ func TestParseGeoDNSConfig(t *testing.T) {
 		{
 			name: "Valid geodns with countries",
 			input: endpoint.ProviderSpecific{
-				{Name: "edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de"]}]`},
+				{Name: "webhook-edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de"]}]`},
 			},
 			expected: []GeoRecord{
 				{Targets: []string{"168.119.120.9"}, Countries: []string{"ae", "de"}},
@@ -504,7 +504,7 @@ func TestParseGeoDNSConfig(t *testing.T) {
 		{
 			name: "Valid geodns with continents",
 			input: endpoint.ProviderSpecific{
-				{Name: "edgecenter-geodns", Value: `[{"targets":["10.0.0.1"],"continents":["AS","EU"]}]`},
+				{Name: "webhook-edgecenter-geodns", Value: `[{"targets":["10.0.0.1"],"continents":["AS","EU"]}]`},
 			},
 			expected: []GeoRecord{
 				{Targets: []string{"10.0.0.1"}, Continents: []string{"AS", "EU"}},
@@ -513,7 +513,7 @@ func TestParseGeoDNSConfig(t *testing.T) {
 		{
 			name: "Multiple geo records",
 			input: endpoint.ProviderSpecific{
-				{Name: "edgecenter-geodns", Value: `[{"targets":["10.0.0.1"],"countries":["ae"]},{"targets":["10.0.0.2"],"continents":["EU"]}]`},
+				{Name: "webhook-edgecenter-geodns", Value: `[{"targets":["10.0.0.1"],"countries":["ae"]},{"targets":["10.0.0.2"],"continents":["EU"]}]`},
 			},
 			expected: []GeoRecord{
 				{Targets: []string{"10.0.0.1"}, Countries: []string{"ae"}},
@@ -523,7 +523,7 @@ func TestParseGeoDNSConfig(t *testing.T) {
 		{
 			name: "Invalid JSON",
 			input: endpoint.ProviderSpecific{
-				{Name: "edgecenter-geodns", Value: `not-json`},
+				{Name: "webhook-edgecenter-geodns", Value: `not-json`},
 			},
 			expected: nil,
 		},
@@ -616,7 +616,7 @@ func TestEdgeCenterProvider_ApplyChanges_CreateGeoDNS(t *testing.T) {
 				Targets:    endpoint.Targets{"158.160.226.68"},
 				RecordTTL:  endpoint.TTL(60),
 				ProviderSpecific: endpoint.ProviderSpecific{
-					{Name: "edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de","nl"]}]`},
+					{Name: "webhook-edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de","nl"]}]`},
 				},
 			},
 		},
@@ -664,7 +664,7 @@ func TestEdgeCenterProvider_ApplyChanges_UpdateGeoDNS(t *testing.T) {
 				Targets:    endpoint.Targets{"158.160.226.99"},
 				RecordTTL:  endpoint.TTL(60),
 				ProviderSpecific: endpoint.ProviderSpecific{
-					{Name: "edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de","nl"]}]`},
+					{Name: "webhook-edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de","nl"]}]`},
 				},
 			},
 		},
