@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/external-dns/plan"
 )
 
-const geoDNSAnnotation = "webhook-edgecenter-geodns"
+const geoDNSAnnotation = "webhook/edgecenter-geodns"
 
 // GeoRecord describes a geo-targeted DNS record from the edgecenter-geodns annotation.
 type GeoRecord struct {
