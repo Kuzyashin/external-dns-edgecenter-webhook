@@ -166,6 +166,57 @@ spec:
 
 ExternalDNS will detect this service and instruct the webhook to create an A record (or AAAA, depending on the service's IP) for `myapp.example.com` pointing to the external IP address of the LoadBalancer.
 
+### GeoDNS Support
+
+The webhook supports EdgeCenter GeoDNS records via the `edgecenter-geodns` annotation. This allows routing traffic to different IPs based on the client's geographic location.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    external-dns.alpha.kubernetes.io/target-provider: edgecenter
+    external-dns.alpha.kubernetes.io/edgecenter-geodns: |
+      [{"targets":["168.119.120.9"],"countries":["ae","de","nl"]}]
+spec:
+  rules:
+  - host: stenogram.viory.video
+```
+
+This creates a GeoDNS record where:
+- Default traffic goes to the Ingress IP (e.g. `158.160.226.68`)
+- Traffic from `ae` (UAE), `de` (Germany), `nl` (Netherlands) goes to `168.119.120.9`
+
+#### Annotation format
+
+JSON array of geo records:
+
+```json
+[
+  {"targets": ["10.0.0.1"], "countries": ["ae", "de"]},
+  {"targets": ["10.0.0.2"], "continents": ["AS"]}
+]
+```
+
+| Field        | Description                                              |
+|--------------|----------------------------------------------------------|
+| `targets`    | List of IP addresses for this geo rule                   |
+| `countries`  | ISO 3166-1 alpha-2 country codes (e.g. `ae`, `de`, `us`)|
+| `continents` | Continent codes: `AF`, `AN`, `AS`, `EU`, `NA`, `OC`, `SA` |
+
+You can combine multiple geo records in one annotation. Each record can use either `countries` or `continents` (or both).
+
+Country codes reference: [ISO 3166-1 alpha-2](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2)
+
+#### How it works
+
+When the annotation is present, the webhook:
+1. Creates the default record with `meta: {"default": true}` using the IP from the Ingress/Service
+2. Creates geo-targeted records with `meta: {"countries": [...]}` or `meta: {"continents": [...]}` from the annotation
+3. Applies EdgeCenter filters: `geodns` + `default` + `first_n`
+
+Without the annotation, records are created as usual (no geo filtering).
+
 ### Using with Multiple DNS Providers
 
 This webhook supports running alongside other ExternalDNS instances managing different providers (e.g., Yandex Cloud DNS, AWS Route53). This is achieved using the `--annotation-filter` argument in ExternalDNS.

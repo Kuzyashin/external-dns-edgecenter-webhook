@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,15 @@ import (
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/plan"
 )
+
+const geoDNSAnnotation = "edgecenter-geodns"
+
+// GeoRecord describes a geo-targeted DNS record from the edgecenter-geodns annotation.
+type GeoRecord struct {
+	Targets    []string `json:"targets"`
+	Continents []string `json:"continents,omitempty"`
+	Countries  []string `json:"countries,omitempty"`
+}
 
 // DNSClient определяет интерфейс для клиента DNS
 type DNSClient interface {
@@ -49,6 +59,68 @@ func endpointsEqual(a, b *endpoint.Endpoint) bool {
 		}
 	}
 	return true
+}
+
+// parseGeoDNSConfig extracts geo DNS records from endpoint ProviderSpecific annotations.
+func parseGeoDNSConfig(providerSpecific endpoint.ProviderSpecific) []GeoRecord {
+	for _, ps := range providerSpecific {
+		if ps.Name == geoDNSAnnotation {
+			var records []GeoRecord
+			if err := json.Unmarshal([]byte(ps.Value), &records); err != nil {
+				return nil
+			}
+			return records
+		}
+	}
+	return nil
+}
+
+// buildGeoDNSRecords creates resource records with geo metadata and the default record.
+// It returns the combined records list and the filters to apply.
+func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoRecord, recordType string, logger *zap.Logger) ([]dnssdk.ResourceRecord, []dnssdk.RecordFilter) {
+	var allRecords []dnssdk.ResourceRecord
+
+	// Mark default records with default meta
+	for i := range defaultRecords {
+		if defaultRecords[i].Meta == nil {
+			defaultRecords[i].Meta = map[string]interface{}{}
+		}
+		defaultRecords[i].Meta["default"] = true
+		allRecords = append(allRecords, defaultRecords[i])
+	}
+
+	// Add geo-targeted records
+	for _, geo := range geoConfig {
+		for _, target := range geo.Targets {
+			content := dnssdk.ToRecordType(recordType, target)
+			if content == nil {
+				logger.Error("Failed to convert geo target to record content",
+					zap.String("type", recordType),
+					zap.String("target", target))
+				continue
+			}
+			meta := map[string]interface{}{}
+			if len(geo.Continents) > 0 {
+				meta["continents"] = geo.Continents
+			}
+			if len(geo.Countries) > 0 {
+				meta["countries"] = geo.Countries
+			}
+			allRecords = append(allRecords, dnssdk.ResourceRecord{
+				Content: content.ToContent(),
+				Enabled: true,
+				Meta:    meta,
+			})
+		}
+	}
+
+	filters := []dnssdk.RecordFilter{
+		dnssdk.NewGeoDNSFilter(0, false),
+		dnssdk.NewDefaultFilter(1, false),
+		dnssdk.NewFirstNFilter(1, false),
+	}
+
+	return allRecords, filters
 }
 
 // EdgeCenterProvider implements the ExternalDNS provider interface for EdgeCenter DNS
@@ -231,17 +303,36 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 			continue
 		}
 
-		p.logger.Info("Creating DNS record",
-			zap.String("original_name", change.DNSName),
-			zap.String("zone", zoneName),
-			zap.String("record", recordName),
-			zap.String("type", change.RecordType),
-			zap.Any("records", resourceRecords),
-			zap.Int("ttl", ttl))
-
-		err := p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, resourceRecords, ttl)
-		if err != nil {
-			return fmt.Errorf("failed to create record %s: %v", change.DNSName, err)
+		// Check for GeoDNS configuration
+		geoConfig := parseGeoDNSConfig(change.ProviderSpecific)
+		var opts []dnssdk.AddZoneOpt
+		if geoConfig != nil {
+			resourceRecords, filters := buildGeoDNSRecords(resourceRecords, geoConfig, change.RecordType, p.logger)
+			opts = append(opts, dnssdk.WithFilters(filters...))
+			p.logger.Info("Creating GeoDNS record",
+				zap.String("original_name", change.DNSName),
+				zap.String("zone", zoneName),
+				zap.String("record", recordName),
+				zap.String("type", change.RecordType),
+				zap.Any("records", resourceRecords),
+				zap.Any("filters", filters),
+				zap.Int("ttl", ttl))
+			err := p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, resourceRecords, ttl, opts...)
+			if err != nil {
+				return fmt.Errorf("failed to create geodns record %s: %v", change.DNSName, err)
+			}
+		} else {
+			p.logger.Info("Creating DNS record",
+				zap.String("original_name", change.DNSName),
+				zap.String("zone", zoneName),
+				zap.String("record", recordName),
+				zap.String("type", change.RecordType),
+				zap.Any("records", resourceRecords),
+				zap.Int("ttl", ttl))
+			err := p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, resourceRecords, ttl)
+			if err != nil {
+				return fmt.Errorf("failed to create record %s: %v", change.DNSName, err)
+			}
 		}
 		p.logger.Info("Successfully created DNS record",
 			zap.String("zone", zoneName),
@@ -324,14 +415,30 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 			}
 
 			if len(newResourceRecords) > 0 {
-				p.logger.Info("Creating new record for update",
-					zap.String("zone", zoneName),
-					zap.String("record", recordName),
-					zap.String("type", change.RecordType),
-					zap.Any("records", newResourceRecords),
-					zap.Int("ttl", ttl))
+				// Check for GeoDNS configuration
+				geoConfig := parseGeoDNSConfig(change.ProviderSpecific)
+				var opts []dnssdk.AddZoneOpt
+				if geoConfig != nil {
+					var filters []dnssdk.RecordFilter
+					newResourceRecords, filters = buildGeoDNSRecords(newResourceRecords, geoConfig, change.RecordType, p.logger)
+					opts = append(opts, dnssdk.WithFilters(filters...))
+					p.logger.Info("Updating GeoDNS record",
+						zap.String("zone", zoneName),
+						zap.String("record", recordName),
+						zap.String("type", change.RecordType),
+						zap.Any("records", newResourceRecords),
+						zap.Any("filters", filters),
+						zap.Int("ttl", ttl))
+				} else {
+					p.logger.Info("Creating new record for update",
+						zap.String("zone", zoneName),
+						zap.String("record", recordName),
+						zap.String("type", change.RecordType),
+						zap.Any("records", newResourceRecords),
+						zap.Int("ttl", ttl))
+				}
 
-				err = p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, newResourceRecords, ttl)
+				err = p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, newResourceRecords, ttl, opts...)
 				if err != nil {
 					return fmt.Errorf("failed to add new record during update for %s: %v", change.DNSName, err)
 				}

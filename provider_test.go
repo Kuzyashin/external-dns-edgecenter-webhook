@@ -480,3 +480,244 @@ func TestEdgeCenterProvider_getZoneAndRecordName(t *testing.T) {
 		})
 	}
 }
+
+func TestParseGeoDNSConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    endpoint.ProviderSpecific
+		expected []GeoRecord
+	}{
+		{
+			name:     "No geodns annotation",
+			input:    endpoint.ProviderSpecific{},
+			expected: nil,
+		},
+		{
+			name: "Valid geodns with countries",
+			input: endpoint.ProviderSpecific{
+				{Name: "edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de"]}]`},
+			},
+			expected: []GeoRecord{
+				{Targets: []string{"168.119.120.9"}, Countries: []string{"ae", "de"}},
+			},
+		},
+		{
+			name: "Valid geodns with continents",
+			input: endpoint.ProviderSpecific{
+				{Name: "edgecenter-geodns", Value: `[{"targets":["10.0.0.1"],"continents":["AS","EU"]}]`},
+			},
+			expected: []GeoRecord{
+				{Targets: []string{"10.0.0.1"}, Continents: []string{"AS", "EU"}},
+			},
+		},
+		{
+			name: "Multiple geo records",
+			input: endpoint.ProviderSpecific{
+				{Name: "edgecenter-geodns", Value: `[{"targets":["10.0.0.1"],"countries":["ae"]},{"targets":["10.0.0.2"],"continents":["EU"]}]`},
+			},
+			expected: []GeoRecord{
+				{Targets: []string{"10.0.0.1"}, Countries: []string{"ae"}},
+				{Targets: []string{"10.0.0.2"}, Continents: []string{"EU"}},
+			},
+		},
+		{
+			name: "Invalid JSON",
+			input: endpoint.ProviderSpecific{
+				{Name: "edgecenter-geodns", Value: `not-json`},
+			},
+			expected: nil,
+		},
+		{
+			name: "Other annotation ignored",
+			input: endpoint.ProviderSpecific{
+				{Name: "some-other", Value: `[{"targets":["10.0.0.1"]}]`},
+			},
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseGeoDNSConfig(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestBuildGeoDNSRecords(t *testing.T) {
+	logger := zap.NewNop()
+
+	defaultContent := dnssdk.ToRecordType("A", "158.160.226.68")
+	defaultRecords := []dnssdk.ResourceRecord{
+		{Content: defaultContent.ToContent(), Enabled: true},
+	}
+
+	geoConfig := []GeoRecord{
+		{Targets: []string{"168.119.120.9"}, Countries: []string{"ae", "de", "nl"}},
+	}
+
+	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, "A", logger)
+
+	// Should have 2 records: default + geo
+	assert.Len(t, records, 2)
+
+	// Default record should have default meta
+	assert.Equal(t, true, records[0].Meta["default"])
+
+	// Geo record should have countries meta
+	assert.Equal(t, []string{"ae", "de", "nl"}, records[1].Meta["countries"])
+
+	// Should have 3 filters: geodns, default, first_n
+	assert.Len(t, filters, 3)
+	assert.Equal(t, "geodns", filters[0].Type)
+	assert.Equal(t, "default", filters[1].Type)
+	assert.Equal(t, "first_n", filters[2].Type)
+}
+
+func TestBuildGeoDNSRecords_MultipleGeoTargets(t *testing.T) {
+	logger := zap.NewNop()
+
+	defaultContent := dnssdk.ToRecordType("A", "10.0.0.1")
+	defaultRecords := []dnssdk.ResourceRecord{
+		{Content: defaultContent.ToContent(), Enabled: true},
+	}
+
+	geoConfig := []GeoRecord{
+		{Targets: []string{"10.0.0.2"}, Countries: []string{"ae"}},
+		{Targets: []string{"10.0.0.3"}, Continents: []string{"EU"}},
+	}
+
+	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, "A", logger)
+
+	// 1 default + 2 geo = 3
+	assert.Len(t, records, 3)
+	assert.Equal(t, true, records[0].Meta["default"])
+	assert.Equal(t, []string{"ae"}, records[1].Meta["countries"])
+	assert.Equal(t, []string{"EU"}, records[2].Meta["continents"])
+	assert.Len(t, filters, 3)
+}
+
+func TestEdgeCenterProvider_ApplyChanges_CreateGeoDNS(t *testing.T) {
+	mockClient := new(MockClient)
+	logger := zap.NewNop()
+	domainFilter := endpoint.NewDomainFilter([]string{"viory.video"})
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
+	assert.NoError(t, err)
+
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{
+		{Name: "viory.video"},
+	}, nil)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			{
+				DNSName:    "stenogram.viory.video.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"158.160.226.68"},
+				RecordTTL:  endpoint.TTL(60),
+				ProviderSpecific: endpoint.ProviderSpecific{
+					{Name: "edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de","nl"]}]`},
+				},
+			},
+		},
+	}
+
+	// Expected: default record with meta + geo record with meta
+	defaultContent := dnssdk.ToRecordType("A", "158.160.226.68")
+	geoContent := dnssdk.ToRecordType("A", "168.119.120.9")
+	expectedRecords := []dnssdk.ResourceRecord{
+		{Content: defaultContent.ToContent(), Enabled: true, Meta: map[string]interface{}{"default": true}},
+		{Content: geoContent.ToContent(), Enabled: true, Meta: map[string]interface{}{"countries": []string{"ae", "de", "nl"}}},
+	}
+
+	mockClient.On("AddZoneRRSet", mock.Anything, "viory.video", "stenogram.viory.video", "A", expectedRecords, 60, mock.Anything).Return(nil)
+
+	err = provider.ApplyChanges(context.Background(), changes)
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+}
+
+func TestEdgeCenterProvider_ApplyChanges_UpdateGeoDNS(t *testing.T) {
+	mockClient := new(MockClient)
+	logger := zap.NewNop()
+	domainFilter := endpoint.NewDomainFilter([]string{"viory.video"})
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
+	assert.NoError(t, err)
+
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{
+		{Name: "viory.video"},
+	}, nil)
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{
+			{
+				DNSName:    "stenogram.viory.video.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"158.160.226.68"},
+				RecordTTL:  endpoint.TTL(60),
+			},
+		},
+		UpdateNew: []*endpoint.Endpoint{
+			{
+				DNSName:    "stenogram.viory.video.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"158.160.226.99"},
+				RecordTTL:  endpoint.TTL(60),
+				ProviderSpecific: endpoint.ProviderSpecific{
+					{Name: "edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de","nl"]}]`},
+				},
+			},
+		},
+	}
+
+	mockClient.On("DeleteRRSet", mock.Anything, "viory.video", "stenogram.viory.video", "A").Return(nil)
+
+	defaultContent := dnssdk.ToRecordType("A", "158.160.226.99")
+	geoContent := dnssdk.ToRecordType("A", "168.119.120.9")
+	expectedRecords := []dnssdk.ResourceRecord{
+		{Content: defaultContent.ToContent(), Enabled: true, Meta: map[string]interface{}{"default": true}},
+		{Content: geoContent.ToContent(), Enabled: true, Meta: map[string]interface{}{"countries": []string{"ae", "de", "nl"}}},
+	}
+
+	mockClient.On("AddZoneRRSet", mock.Anything, "viory.video", "stenogram.viory.video", "A", expectedRecords, 60, mock.Anything).Return(nil)
+
+	err = provider.ApplyChanges(context.Background(), changes)
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+}
+
+func TestEdgeCenterProvider_ApplyChanges_CreateWithoutGeoDNS_Unchanged(t *testing.T) {
+	// Verify that records WITHOUT geodns annotation still work as before
+	mockClient := new(MockClient)
+	logger := zap.NewNop()
+	domainFilter := endpoint.NewDomainFilter([]string{"example.com"})
+	provider, err := NewEdgeCenterProvider(mockClient, domainFilter, logger, false, 600)
+	assert.NoError(t, err)
+
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{
+		{Name: "example.com"},
+	}, nil)
+
+	changes := &plan.Changes{
+		Create: []*endpoint.Endpoint{
+			{
+				DNSName:    "plain.example.com.",
+				RecordType: "A",
+				Targets:    endpoint.Targets{"10.0.0.1"},
+				RecordTTL:  endpoint.TTL(300),
+			},
+		},
+	}
+
+	// No geo meta on records — plain create
+	expectedContent := dnssdk.ToRecordType("A", "10.0.0.1")
+	expectedRecords := []dnssdk.ResourceRecord{
+		{Content: expectedContent.ToContent(), Enabled: true},
+	}
+
+	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "plain.example.com", "A", expectedRecords, 300, mock.Anything).Return(nil)
+
+	err = provider.ApplyChanges(context.Background(), changes)
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+}
