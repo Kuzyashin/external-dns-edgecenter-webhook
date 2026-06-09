@@ -14,6 +14,7 @@ import (
 )
 
 const geoDNSAnnotation = "webhook/edgecenter-geodns"
+const healthcheckAnnotation = "webhook/edgecenter-healthcheck"
 
 // GeoRecord describes a geo-targeted DNS record from the edgecenter-geodns annotation.
 type GeoRecord struct {
@@ -75,9 +76,31 @@ func parseGeoDNSConfig(providerSpecific endpoint.ProviderSpecific) []GeoRecord {
 	return nil
 }
 
+// parseHealthcheckConfig extracts the DNS-failover healthcheck from the
+// edgecenter-healthcheck annotation. When present, geo (relay) records get a
+// `failover` meta so EdgeCenter actively monitors them, the default record is
+// marked `backup` (returned only when all monitored records are down), and the
+// is_healthy filter is added — giving GeoDNS automatic failover to the main IP.
+// Example annotation value: {"protocol":"ICMP","frequency":10,"timeout":10}
+func parseHealthcheckConfig(providerSpecific endpoint.ProviderSpecific) *dnssdk.FailoverMeta {
+	for _, ps := range providerSpecific {
+		if ps.Name == healthcheckAnnotation {
+			var hc dnssdk.FailoverMeta
+			if err := json.Unmarshal([]byte(ps.Value), &hc); err != nil {
+				return nil
+			}
+			if hc.Protocol == "" {
+				return nil
+			}
+			return &hc
+		}
+	}
+	return nil
+}
+
 // buildGeoDNSRecords creates resource records with geo metadata and the default record.
 // It returns the combined records list and the filters to apply.
-func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoRecord, recordType string, logger *zap.Logger) ([]dnssdk.ResourceRecord, []dnssdk.RecordFilter) {
+func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoRecord, healthcheck *dnssdk.FailoverMeta, recordType string, logger *zap.Logger) ([]dnssdk.ResourceRecord, []dnssdk.RecordFilter) {
 	var allRecords []dnssdk.ResourceRecord
 
 	// Mark default records with default meta
@@ -86,6 +109,11 @@ func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoR
 			defaultRecords[i].Meta = map[string]interface{}{}
 		}
 		defaultRecords[i].Meta["default"] = true
+		// With healthcheck on, the default record becomes the failover target:
+		// is_healthy returns backup records only when all non-backup are down.
+		if healthcheck != nil {
+			defaultRecords[i].Meta["backup"] = true
+		}
 		allRecords = append(allRecords, defaultRecords[i])
 	}
 
@@ -106,6 +134,9 @@ func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoR
 			if len(geo.Countries) > 0 {
 				meta["countries"] = geo.Countries
 			}
+			if healthcheck != nil {
+				meta["failover"] = healthcheck
+			}
 			allRecords = append(allRecords, dnssdk.ResourceRecord{
 				Content: content.ToContent(),
 				Enabled: true,
@@ -116,9 +147,16 @@ func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoR
 
 	filters := []dnssdk.RecordFilter{
 		dnssdk.NewGeoDNSFilter(0, false),
+	}
+	// is_healthy must run after geodns selects the region's records, so dead
+	// relays are dropped and (via backup meta) traffic falls back to the main IP.
+	if healthcheck != nil {
+		filters = append(filters, dnssdk.NewIsHealthyFilter(0, false))
+	}
+	filters = append(filters,
 		dnssdk.NewDefaultFilter(1, false),
 		dnssdk.NewFirstNFilter(1, false),
-	}
+	)
 
 	return allRecords, filters
 }
@@ -303,11 +341,12 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 			continue
 		}
 
-		// Check for GeoDNS configuration
+		// Check for GeoDNS configuration (only for A/AAAA records)
 		geoConfig := parseGeoDNSConfig(change.ProviderSpecific)
 		var opts []dnssdk.AddZoneOpt
-		if geoConfig != nil {
-			resourceRecords, filters := buildGeoDNSRecords(resourceRecords, geoConfig, change.RecordType, p.logger)
+		if geoConfig != nil && (change.RecordType == "A" || change.RecordType == "AAAA") {
+			healthcheck := parseHealthcheckConfig(change.ProviderSpecific)
+			resourceRecords, filters := buildGeoDNSRecords(resourceRecords, geoConfig, healthcheck, change.RecordType, p.logger)
 			opts = append(opts, dnssdk.WithFilters(filters...))
 			p.logger.Info("Creating GeoDNS record",
 				zap.String("original_name", change.DNSName),
@@ -415,12 +454,13 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 			}
 
 			if len(newResourceRecords) > 0 {
-				// Check for GeoDNS configuration
+				// Check for GeoDNS configuration (only for A/AAAA records)
 				geoConfig := parseGeoDNSConfig(change.ProviderSpecific)
 				var opts []dnssdk.AddZoneOpt
-				if geoConfig != nil {
+				if geoConfig != nil && (change.RecordType == "A" || change.RecordType == "AAAA") {
 					var filters []dnssdk.RecordFilter
-					newResourceRecords, filters = buildGeoDNSRecords(newResourceRecords, geoConfig, change.RecordType, p.logger)
+					healthcheck := parseHealthcheckConfig(change.ProviderSpecific)
+					newResourceRecords, filters = buildGeoDNSRecords(newResourceRecords, geoConfig, healthcheck, change.RecordType, p.logger)
 					opts = append(opts, dnssdk.WithFilters(filters...))
 					p.logger.Info("Updating GeoDNS record",
 						zap.String("zone", zoneName),

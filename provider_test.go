@@ -556,7 +556,7 @@ func TestBuildGeoDNSRecords(t *testing.T) {
 		{Targets: []string{"168.119.120.9"}, Countries: []string{"ae", "de", "nl"}},
 	}
 
-	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, "A", logger)
+	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, nil, "A", logger)
 
 	// Should have 2 records: default + geo
 	assert.Len(t, records, 2)
@@ -587,7 +587,7 @@ func TestBuildGeoDNSRecords_MultipleGeoTargets(t *testing.T) {
 		{Targets: []string{"10.0.0.3"}, Continents: []string{"EU"}},
 	}
 
-	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, "A", logger)
+	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, nil, "A", logger)
 
 	// 1 default + 2 geo = 3
 	assert.Len(t, records, 3)
@@ -595,6 +595,33 @@ func TestBuildGeoDNSRecords_MultipleGeoTargets(t *testing.T) {
 	assert.Equal(t, []string{"ae"}, records[1].Meta["countries"])
 	assert.Equal(t, []string{"EU"}, records[2].Meta["continents"])
 	assert.Len(t, filters, 3)
+}
+
+func TestBuildGeoDNSRecords_Healthcheck(t *testing.T) {
+	logger := zap.NewNop()
+
+	defaultContent := dnssdk.ToRecordType("A", "10.0.0.1")
+	defaultRecords := []dnssdk.ResourceRecord{
+		{Content: defaultContent.ToContent(), Enabled: true},
+	}
+	geoConfig := []GeoRecord{
+		{Targets: []string{"10.0.0.2"}, Countries: []string{"de"}},
+	}
+	hc := &dnssdk.FailoverMeta{Protocol: "ICMP", Frequency: 10, Timeout: 10}
+
+	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, hc, "A", logger)
+
+	// default record is marked both default and backup (failover target)
+	assert.Equal(t, true, records[0].Meta["default"])
+	assert.Equal(t, true, records[0].Meta["backup"])
+	// geo record carries the failover healthcheck meta
+	assert.Equal(t, hc, records[1].Meta["failover"])
+	// is_healthy filter inserted after geodns: geodns, is_healthy, default, first_n
+	assert.Len(t, filters, 4)
+	assert.Equal(t, "geodns", filters[0].Type)
+	assert.Equal(t, "is_healthy", filters[1].Type)
+	assert.Equal(t, "default", filters[2].Type)
+	assert.Equal(t, "first_n", filters[3].Type)
 }
 
 func TestEdgeCenterProvider_ApplyChanges_CreateGeoDNS(t *testing.T) {
