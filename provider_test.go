@@ -37,6 +37,27 @@ func (m *MockClient) DeleteRRSet(ctx context.Context, zoneName, recordName, reco
 	return args.Error(0)
 }
 
+func (m *MockClient) RRSet(ctx context.Context, zoneName, recordName, recordType string) (dnssdk.RRSet, error) {
+	args := m.Called(ctx, zoneName, recordName, recordType)
+	return args.Get(0).(dnssdk.RRSet), args.Error(1)
+}
+
+func (m *MockClient) UpdateRRSet(ctx context.Context, zoneName, recordName, recordType string, record dnssdk.RRSet) error {
+	args := m.Called(ctx, zoneName, recordName, recordType, record)
+	return args.Error(0)
+}
+
+// aRecords — набор A-записей без meta, как их возвращает/принимает EdgeCenter.
+func aRecords(ips ...string) []dnssdk.ResourceRecord {
+	out := make([]dnssdk.ResourceRecord, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, dnssdk.ResourceRecord{Content: dnssdk.ToRecordType("A", ip).ToContent(), Enabled: true})
+	}
+	return out
+}
+
+var notFound = dnssdk.APIError{StatusCode: 404}
+
 func TestNewEdgeCenterProvider(t *testing.T) {
 	mockClient := new(MockClient)
 	logger, _ := zap.NewDevelopment()
@@ -213,19 +234,124 @@ func TestEdgeCenterProvider_ApplyChanges_Update(t *testing.T) {
 		},
 	}
 
-	// Настройка мока для DeleteRRSet (для старой записи)
-	mockClient.On("DeleteRRSet", mock.Anything, "example.com", "update.example.com", "A").Return(nil)
-	// Настройка мока для AddZoneRRSet (для новой записи) - ожидаем слайс с одной записью
-	expectedNewRecord := dnssdk.ToRecordType("A", "192.0.2.10")
-	expectedNewRecords := []dnssdk.ResourceRecord{{Content: expectedNewRecord.ToContent(), Enabled: true}}
-	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "update.example.com", "A", expectedNewRecords, 600, mock.Anything).Return(nil)
+	// В EdgeCenter старый адрес — обновляем на месте (PUT), без удаления
+	mockClient.On("RRSet", mock.Anything, "example.com", "update.example.com", "A").
+		Return(dnssdk.RRSet{TTL: 600, Records: aRecords("192.0.2.1")}, nil)
+	mockClient.On("UpdateRRSet", mock.Anything, "example.com", "update.example.com", "A",
+		dnssdk.RRSet{TTL: 600, Records: aRecords("192.0.2.10")}).Return(nil)
 
 	// Действие
 	err = provider.ApplyChanges(context.Background(), changes)
 
 	// Проверка
 	assert.NoError(t, err)
-	mockClient.AssertExpectations(t) // Проверяем, что оба вызова (Delete и Add) были сделаны
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+	mockClient.AssertNotCalled(t, "AddZoneRRSet")
+}
+
+// Регрессия 07.10.2026: external-dns раз в interval присылает UpdateNew с TTL=0
+// (TTL не задан в ingress) при той же цели. Раньше это считалось «изменением»,
+// запись удалялась и создавалась заново — при сбое создания домен пропадал.
+func TestEdgeCenterProvider_ApplyChanges_UpdateUnsetTTLSameTargetsIsNoop(t *testing.T) {
+	mockClient := new(MockClient)
+	provider, err := NewEdgeCenterProvider(mockClient, endpoint.NewDomainFilter([]string{"ruptly.video"}), zap.NewNop(), false, 600)
+	assert.NoError(t, err)
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{{Name: "ruptly.video"}}, nil)
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{{DNSName: "sentry.ops.ruptly.video.", RecordType: "A", Targets: endpoint.Targets{"135.106.158.220"}, RecordTTL: 600}},
+		UpdateNew: []*endpoint.Endpoint{{DNSName: "sentry.ops.ruptly.video.", RecordType: "A", Targets: endpoint.Targets{"135.106.158.220"}}},
+	}
+
+	assert.NoError(t, provider.ApplyChanges(context.Background(), changes))
+	mockClient.AssertNotCalled(t, "RRSet")
+	mockClient.AssertNotCalled(t, "UpdateRRSet")
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+	mockClient.AssertNotCalled(t, "AddZoneRRSet")
+}
+
+// Даже если external-dns считает запись изменённой, но в EdgeCenter она уже такая,
+// как нужно, — API на запись не дёргаем.
+func TestEdgeCenterProvider_ApplyChanges_UpdateSkipWhenEdgeCenterMatches(t *testing.T) {
+	mockClient := new(MockClient)
+	provider, err := NewEdgeCenterProvider(mockClient, endpoint.NewDomainFilter([]string{"example.com"}), zap.NewNop(), false, 600)
+	assert.NoError(t, err)
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{{Name: "example.com"}}, nil)
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{{DNSName: "x.example.com.", RecordType: "A", Targets: endpoint.Targets{"10.0.0.9"}, RecordTTL: 300}},
+		UpdateNew: []*endpoint.Endpoint{{DNSName: "x.example.com.", RecordType: "A", Targets: endpoint.Targets{"10.0.0.1"}}},
+	}
+	// фактическое состояние уже 10.0.0.1 (кто-то поправил) — TTL из EdgeCenter сохраняется
+	mockClient.On("RRSet", mock.Anything, "example.com", "x.example.com", "A").
+		Return(dnssdk.RRSet{TTL: 300, Records: aRecords("10.0.0.1")}, nil)
+
+	assert.NoError(t, provider.ApplyChanges(context.Background(), changes))
+	mockClient.AssertNotCalled(t, "UpdateRRSet")
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+	mockClient.AssertNotCalled(t, "AddZoneRRSet")
+}
+
+// Не заданный TTL при реальном изменении целей сохраняет текущий TTL из EdgeCenter.
+func TestEdgeCenterProvider_ApplyChanges_UpdateKeepsCurrentTTLWhenUnset(t *testing.T) {
+	mockClient := new(MockClient)
+	provider, err := NewEdgeCenterProvider(mockClient, endpoint.NewDomainFilter([]string{"example.com"}), zap.NewNop(), false, 600)
+	assert.NoError(t, err)
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{{Name: "example.com"}}, nil)
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{{DNSName: "y.example.com.", RecordType: "A", Targets: endpoint.Targets{"10.0.0.1"}, RecordTTL: 60}},
+		UpdateNew: []*endpoint.Endpoint{{DNSName: "y.example.com.", RecordType: "A", Targets: endpoint.Targets{"10.0.0.2"}}},
+	}
+	mockClient.On("RRSet", mock.Anything, "example.com", "y.example.com", "A").
+		Return(dnssdk.RRSet{TTL: 60, Records: aRecords("10.0.0.1")}, nil)
+	mockClient.On("UpdateRRSet", mock.Anything, "example.com", "y.example.com", "A",
+		dnssdk.RRSet{TTL: 60, Records: aRecords("10.0.0.2")}).Return(nil)
+
+	assert.NoError(t, provider.ApplyChanges(context.Background(), changes))
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+}
+
+// Записи в EdgeCenter нет — при update создаём её, удаления не делаем.
+func TestEdgeCenterProvider_ApplyChanges_UpdateCreatesWhenMissing(t *testing.T) {
+	mockClient := new(MockClient)
+	provider, err := NewEdgeCenterProvider(mockClient, endpoint.NewDomainFilter([]string{"example.com"}), zap.NewNop(), false, 600)
+	assert.NoError(t, err)
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{{Name: "example.com"}}, nil)
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{{DNSName: "gone.example.com.", RecordType: "A", Targets: endpoint.Targets{"10.0.0.1"}, RecordTTL: 300}},
+		UpdateNew: []*endpoint.Endpoint{{DNSName: "gone.example.com.", RecordType: "A", Targets: endpoint.Targets{"10.0.0.5"}}},
+	}
+	mockClient.On("RRSet", mock.Anything, "example.com", "gone.example.com", "A").Return(dnssdk.RRSet{}, notFound)
+	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "gone.example.com", "A", aRecords("10.0.0.5"), 600, mock.Anything).Return(nil)
+
+	assert.NoError(t, provider.ApplyChanges(context.Background(), changes))
+	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+	mockClient.AssertNotCalled(t, "UpdateRRSet")
+}
+
+// Ошибка API при обновлении не приводит к удалению записи.
+func TestEdgeCenterProvider_ApplyChanges_UpdateErrorKeepsRecord(t *testing.T) {
+	mockClient := new(MockClient)
+	provider, err := NewEdgeCenterProvider(mockClient, endpoint.NewDomainFilter([]string{"example.com"}), zap.NewNop(), false, 600)
+	assert.NoError(t, err)
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{{Name: "example.com"}}, nil)
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{{DNSName: "z.example.com.", RecordType: "A", Targets: endpoint.Targets{"10.0.0.1"}, RecordTTL: 300}},
+		UpdateNew: []*endpoint.Endpoint{{DNSName: "z.example.com.", RecordType: "A", Targets: endpoint.Targets{"10.0.0.2"}, RecordTTL: 300}},
+	}
+	mockClient.On("RRSet", mock.Anything, "example.com", "z.example.com", "A").
+		Return(dnssdk.RRSet{TTL: 300, Records: aRecords("10.0.0.1")}, nil)
+	mockClient.On("UpdateRRSet", mock.Anything, "example.com", "z.example.com", "A", mock.Anything).
+		Return(assert.AnError)
+
+	assert.Error(t, provider.ApplyChanges(context.Background(), changes))
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
 }
 
 func TestEdgeCenterProvider_ApplyChanges_UpdateSkipUnchanged(t *testing.T) {
@@ -340,14 +466,15 @@ func TestEdgeCenterProvider_ApplyChanges_UpdateOnTTLChange(t *testing.T) {
 		},
 	}
 
-	mockClient.On("DeleteRRSet", mock.Anything, "example.com", "ttl.example.com", "A").Return(nil)
-	expectedRecord := dnssdk.ToRecordType("A", "10.0.0.1")
-	expectedRecords := []dnssdk.ResourceRecord{{Content: expectedRecord.ToContent(), Enabled: true}}
-	mockClient.On("AddZoneRRSet", mock.Anything, "example.com", "ttl.example.com", "A", expectedRecords, 600, mock.Anything).Return(nil)
+	mockClient.On("RRSet", mock.Anything, "example.com", "ttl.example.com", "A").
+		Return(dnssdk.RRSet{TTL: 300, Records: aRecords("10.0.0.1")}, nil)
+	mockClient.On("UpdateRRSet", mock.Anything, "example.com", "ttl.example.com", "A",
+		dnssdk.RRSet{TTL: 600, Records: aRecords("10.0.0.1")}).Return(nil)
 
 	err = provider.ApplyChanges(context.Background(), changes)
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
 }
 
 func TestEdgeCenterProvider_ApplyChanges_Delete(t *testing.T) {
@@ -556,7 +683,7 @@ func TestBuildGeoDNSRecords(t *testing.T) {
 		{Targets: []string{"168.119.120.9"}, Countries: []string{"ae", "de", "nl"}},
 	}
 
-	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, nil, "A", logger)
+	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, nil, 1, "A", logger)
 
 	// Should have 2 records: default + geo
 	assert.Len(t, records, 2)
@@ -587,7 +714,7 @@ func TestBuildGeoDNSRecords_MultipleGeoTargets(t *testing.T) {
 		{Targets: []string{"10.0.0.3"}, Continents: []string{"EU"}},
 	}
 
-	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, nil, "A", logger)
+	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, nil, 1, "A", logger)
 
 	// 1 default + 2 geo = 3
 	assert.Len(t, records, 3)
@@ -609,7 +736,7 @@ func TestBuildGeoDNSRecords_Healthcheck(t *testing.T) {
 	}
 	hc := &dnssdk.FailoverMeta{Protocol: "ICMP", Frequency: 10, Timeout: 10}
 
-	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, hc, "A", logger)
+	records, filters := buildGeoDNSRecords(defaultRecords, geoConfig, hc, 1, "A", logger)
 
 	// default record is marked both default and backup (failover target)
 	assert.Equal(t, true, records[0].Meta["default"])
@@ -697,7 +824,8 @@ func TestEdgeCenterProvider_ApplyChanges_UpdateGeoDNS(t *testing.T) {
 		},
 	}
 
-	mockClient.On("DeleteRRSet", mock.Anything, "viory.video", "stenogram.viory.video", "A").Return(nil)
+	mockClient.On("RRSet", mock.Anything, "viory.video", "stenogram.viory.video", "A").
+		Return(dnssdk.RRSet{TTL: 60, Records: aRecords("158.160.226.68")}, nil)
 
 	defaultContent := dnssdk.ToRecordType("A", "158.160.226.99")
 	geoContent := dnssdk.ToRecordType("A", "168.119.120.9")
@@ -705,12 +833,48 @@ func TestEdgeCenterProvider_ApplyChanges_UpdateGeoDNS(t *testing.T) {
 		{Content: defaultContent.ToContent(), Enabled: true, Meta: map[string]interface{}{"default": true}},
 		{Content: geoContent.ToContent(), Enabled: true, Meta: map[string]interface{}{"countries": []string{"ae", "de", "nl"}}},
 	}
+	expectedFilters := []dnssdk.RecordFilter{
+		dnssdk.NewGeoDNSFilter(0, false),
+		dnssdk.NewDefaultFilter(1, false),
+		dnssdk.NewFirstNFilter(1, false),
+	}
 
-	mockClient.On("AddZoneRRSet", mock.Anything, "viory.video", "stenogram.viory.video", "A", expectedRecords, 60, mock.Anything).Return(nil)
+	mockClient.On("UpdateRRSet", mock.Anything, "viory.video", "stenogram.viory.video", "A",
+		dnssdk.RRSet{TTL: 60, Records: expectedRecords, Filters: expectedFilters}).Return(nil)
 
 	err = provider.ApplyChanges(context.Background(), changes)
 	assert.NoError(t, err)
 	mockClient.AssertExpectations(t)
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+}
+
+// GeoDNS-запись, которая в EdgeCenter уже совпадает (meta приходит из JSON как
+// []interface{}), повторно не обновляется.
+func TestEdgeCenterProvider_ApplyChanges_UpdateGeoDNSUnchangedIsNoop(t *testing.T) {
+	mockClient := new(MockClient)
+	provider, err := NewEdgeCenterProvider(mockClient, endpoint.NewDomainFilter([]string{"viory.video"}), zap.NewNop(), false, 600)
+	assert.NoError(t, err)
+	mockClient.On("Zones", mock.Anything, mock.Anything).Return([]dnssdk.Zone{{Name: "viory.video"}}, nil)
+
+	geo := endpoint.ProviderSpecific{{Name: "webhook/edgecenter-geodns", Value: `[{"targets":["168.119.120.9"],"countries":["ae","de"]}]`}}
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{{DNSName: "s.viory.video.", RecordType: "A", Targets: endpoint.Targets{"1.2.3.4"}, RecordTTL: 60}},
+		UpdateNew: []*endpoint.Endpoint{{DNSName: "s.viory.video.", RecordType: "A", Targets: endpoint.Targets{"1.2.3.4"}, RecordTTL: 60, ProviderSpecific: geo}},
+	}
+	current := dnssdk.RRSet{
+		TTL: 60,
+		Records: []dnssdk.ResourceRecord{
+			{Content: []interface{}{"168.119.120.9"}, Enabled: true, Meta: map[string]interface{}{"countries": []interface{}{"ae", "de"}}},
+			{Content: []interface{}{"1.2.3.4"}, Enabled: true, Meta: map[string]interface{}{"default": true}},
+		},
+		Filters: []dnssdk.RecordFilter{dnssdk.NewGeoDNSFilter(0, false), dnssdk.NewDefaultFilter(1, false), dnssdk.NewFirstNFilter(1, false)},
+	}
+	mockClient.On("RRSet", mock.Anything, "viory.video", "s.viory.video", "A").Return(current, nil)
+
+	assert.NoError(t, provider.ApplyChanges(context.Background(), changes))
+	mockClient.AssertNotCalled(t, "UpdateRRSet")
+	mockClient.AssertNotCalled(t, "DeleteRRSet")
+	mockClient.AssertNotCalled(t, "AddZoneRRSet")
 }
 
 func TestEdgeCenterProvider_ApplyChanges_CreateWithoutGeoDNS_Unchanged(t *testing.T) {

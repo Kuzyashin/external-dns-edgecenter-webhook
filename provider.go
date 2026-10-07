@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	dnssdk "github.com/Edge-Center/edgecenter-dns-sdk-go"
@@ -15,6 +18,7 @@ import (
 
 const geoDNSAnnotation = "webhook/edgecenter-geodns"
 const healthcheckAnnotation = "webhook/edgecenter-healthcheck"
+const maxRecordsAnnotation = "webhook/edgecenter-max-records"
 
 // GeoRecord describes a geo-targeted DNS record from the edgecenter-geodns annotation.
 type GeoRecord struct {
@@ -29,6 +33,8 @@ type DNSClient interface {
 	Zone(ctx context.Context, name string) (dnssdk.Zone, error)
 	AddZoneRRSet(ctx context.Context, zoneName, recordName, recordType string, records []dnssdk.ResourceRecord, ttl int, opts ...dnssdk.AddZoneOpt) error
 	DeleteRRSet(ctx context.Context, zoneName, recordName, recordType string) error
+	RRSet(ctx context.Context, zoneName, recordName, recordType string) (dnssdk.RRSet, error)
+	UpdateRRSet(ctx context.Context, zoneName, recordName, recordType string, record dnssdk.RRSet) error
 }
 
 // Provider определяет интерфейс для DNS провайдера
@@ -39,10 +45,15 @@ type Provider interface {
 	GetDomainFilter() []string
 }
 
-// endpointsEqual проверяет, совпадают ли targets и TTL двух endpoint'ов.
-// Если всё идентично — обновление не требуется.
+// endpointsEqual проверяет, совпадают ли targets, TTL и provider-specific
+// аннотации старого (a) и нового (b) endpoint'а. Если всё идентично —
+// обновление не требуется. TTL, не заданный в новом endpoint'е (0), считается
+// совпадающим с любым: «не задан» значит «оставить текущий», а не «поменять».
 func endpointsEqual(a, b *endpoint.Endpoint) bool {
-	if a.RecordTTL != b.RecordTTL {
+	if b.RecordTTL != 0 && a.RecordTTL != b.RecordTTL {
+		return false
+	}
+	if !providerSpecificEqual(a.ProviderSpecific, b.ProviderSpecific) {
 		return false
 	}
 	if len(a.Targets) != len(b.Targets) {
@@ -60,6 +71,86 @@ func endpointsEqual(a, b *endpoint.Endpoint) bool {
 		}
 	}
 	return true
+}
+
+// providerSpecificEqual сравнивает наши webhook/* аннотации (GeoDNS, healthcheck,
+// max-records). Остальные provider-specific свойства на запись не влияют.
+func providerSpecificEqual(a, b endpoint.ProviderSpecific) bool {
+	pick := func(ps endpoint.ProviderSpecific) map[string]string {
+		m := map[string]string{}
+		for _, p := range ps {
+			if strings.HasPrefix(p.Name, "webhook/") {
+				m[p.Name] = p.Value
+			}
+		}
+		return m
+	}
+	am, bm := pick(a), pick(b)
+	if len(am) != len(bm) {
+		return false
+	}
+	for k, v := range am {
+		if bm[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// isNotFound — ответ API EdgeCenter 404 (записи нет).
+func isNotFound(err error) bool {
+	apiErr := new(dnssdk.APIError)
+	return errors.As(err, apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
+
+// recordKey — нормализованное представление записи для сравнения:
+// содержимое, enabled и meta (через JSON, ключи map сортируются).
+func recordKey(r dnssdk.ResourceRecord) string {
+	meta := "{}"
+	if len(r.Meta) > 0 {
+		var norm interface{}
+		if b, err := json.Marshal(r.Meta); err == nil && json.Unmarshal(b, &norm) == nil {
+			if nb, err := json.Marshal(norm); err == nil {
+				meta = string(nb)
+			}
+		}
+	}
+	return fmt.Sprintf("%s|%t|%s", r.ContentToString(), r.Enabled, meta)
+}
+
+// rrsetDiff возвращает причину расхождения текущего RRSet в EdgeCenter с желаемым
+// или "" если они совпадают (тогда запись трогать не нужно).
+func rrsetDiff(current, desired dnssdk.RRSet) string {
+	if current.TTL != desired.TTL {
+		return fmt.Sprintf("ttl %d -> %d", current.TTL, desired.TTL)
+	}
+	if len(current.Filters) != len(desired.Filters) {
+		return fmt.Sprintf("filters count %d -> %d", len(current.Filters), len(desired.Filters))
+	}
+	for i := range current.Filters {
+		c, d := current.Filters[i], desired.Filters[i]
+		if c.Type != d.Type || c.Limit != d.Limit || c.Strict != d.Strict {
+			return fmt.Sprintf("filter #%d %s/%d -> %s/%d", i, c.Type, c.Limit, d.Type, d.Limit)
+		}
+	}
+	keys := func(rs []dnssdk.ResourceRecord) []string {
+		out := make([]string, 0, len(rs))
+		for _, r := range rs {
+			out = append(out, recordKey(r))
+		}
+		sort.Strings(out)
+		return out
+	}
+	ck, dk := keys(current.Records), keys(desired.Records)
+	if len(ck) != len(dk) {
+		return fmt.Sprintf("records count %d -> %d", len(ck), len(dk))
+	}
+	for i := range ck {
+		if ck[i] != dk[i] {
+			return fmt.Sprintf("record %q -> %q", ck[i], dk[i])
+		}
+	}
+	return ""
 }
 
 // parseGeoDNSConfig extracts geo DNS records from endpoint ProviderSpecific annotations.
@@ -98,9 +189,24 @@ func parseHealthcheckConfig(providerSpecific endpoint.ProviderSpecific) *dnssdk.
 	return nil
 }
 
+// parseMaxRecords reads the edgecenter-max-records annotation — how many records
+// the first_n filter returns per DNS response. Default 1 (single answer). Set >1
+// for client-side redundancy (e.g. 2 → client gets both regional relays and
+// retries the other if one is dead). Returns 1 when unset/invalid.
+func parseMaxRecords(providerSpecific endpoint.ProviderSpecific) uint {
+	for _, ps := range providerSpecific {
+		if ps.Name == maxRecordsAnnotation {
+			if n, err := strconv.ParseUint(ps.Value, 10, 32); err == nil && n > 0 {
+				return uint(n)
+			}
+		}
+	}
+	return 1
+}
+
 // buildGeoDNSRecords creates resource records with geo metadata and the default record.
 // It returns the combined records list and the filters to apply.
-func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoRecord, healthcheck *dnssdk.FailoverMeta, recordType string, logger *zap.Logger) ([]dnssdk.ResourceRecord, []dnssdk.RecordFilter) {
+func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoRecord, healthcheck *dnssdk.FailoverMeta, maxRecords uint, recordType string, logger *zap.Logger) ([]dnssdk.ResourceRecord, []dnssdk.RecordFilter) {
 	var allRecords []dnssdk.ResourceRecord
 
 	// Mark default records with default meta
@@ -155,7 +261,7 @@ func buildGeoDNSRecords(defaultRecords []dnssdk.ResourceRecord, geoConfig []GeoR
 	}
 	filters = append(filters,
 		dnssdk.NewDefaultFilter(1, false),
-		dnssdk.NewFirstNFilter(1, false),
+		dnssdk.NewFirstNFilter(maxRecords, false),
 	)
 
 	return allRecords, filters
@@ -346,7 +452,8 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 		var opts []dnssdk.AddZoneOpt
 		if geoConfig != nil && (change.RecordType == "A" || change.RecordType == "AAAA") {
 			healthcheck := parseHealthcheckConfig(change.ProviderSpecific)
-			resourceRecords, filters := buildGeoDNSRecords(resourceRecords, geoConfig, healthcheck, change.RecordType, p.logger)
+			maxRecords := parseMaxRecords(change.ProviderSpecific)
+			resourceRecords, filters := buildGeoDNSRecords(resourceRecords, geoConfig, healthcheck, maxRecords, change.RecordType, p.logger)
 			opts = append(opts, dnssdk.WithFilters(filters...))
 			p.logger.Info("Creating GeoDNS record",
 				zap.String("original_name", change.DNSName),
@@ -404,12 +511,6 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 			continue
 		}
 
-		ttl := int(change.RecordTTL)
-		if ttl == 0 {
-			ttl = p.defaultTTL // Use configured default TTL for update
-			p.logger.Info("Using configured default TTL for update", zap.Int("ttl", ttl))
-		}
-
 		// Prepare resource records from all new targets
 		newResourceRecords := make([]dnssdk.ResourceRecord, 0, len(change.Targets))
 		for _, target := range change.Targets {
@@ -427,66 +528,91 @@ func (p *EdgeCenterProvider) ApplyChanges(ctx context.Context, changes *plan.Cha
 		}
 
 		if len(newResourceRecords) == 0 {
-			p.logger.Warn("No valid new resource records could be created for endpoint update",
+			// Пустой набор целей не повод удалять запись: удаление — только через changes.Delete.
+			p.logger.Warn("No valid new resource records could be created for endpoint update, leaving record as is",
 				zap.String("dnsName", change.DNSName),
 				zap.String("type", change.RecordType))
-		} else if p.dryRun {
+			continue
+		}
+
+		// GeoDNS (только A/AAAA): записи по регионам + фильтры
+		var filters []dnssdk.RecordFilter
+		if geoConfig := parseGeoDNSConfig(change.ProviderSpecific); geoConfig != nil && (change.RecordType == "A" || change.RecordType == "AAAA") {
+			healthcheck := parseHealthcheckConfig(change.ProviderSpecific)
+			maxRecords := parseMaxRecords(change.ProviderSpecific)
+			newResourceRecords, filters = buildGeoDNSRecords(newResourceRecords, geoConfig, healthcheck, maxRecords, change.RecordType, p.logger)
+		}
+
+		// Текущее состояние в EdgeCenter — эталон для сравнения.
+		current, err := p.client.RRSet(ctx, zoneName, recordName, change.RecordType)
+		exists := err == nil && len(current.Records) > 0
+		if err != nil && !isNotFound(err) {
+			return fmt.Errorf("failed to read current record for update %s: %v", change.DNSName, err)
+		}
+
+		// TTL: если в endpoint'е не задан — оставляем текущий, а не сбрасываем в default.
+		ttl := int(change.RecordTTL)
+		if ttl == 0 {
+			if exists {
+				ttl = current.TTL
+			} else {
+				ttl = p.defaultTTL
+			}
+		}
+
+		desired := dnssdk.RRSet{TTL: ttl, Records: newResourceRecords, Filters: filters}
+		if exists {
+			desired.Meta = current.Meta // RRSet-level meta не управляем — не затираем
+			if diff := rrsetDiff(current, desired); diff == "" {
+				p.logger.Info("Skipping update, record in EdgeCenter already matches",
+					zap.String("dnsName", change.DNSName),
+					zap.String("type", change.RecordType))
+				continue
+			} else {
+				p.logger.Info("Record differs from desired",
+					zap.String("dnsName", change.DNSName),
+					zap.String("type", change.RecordType),
+					zap.String("diff", diff))
+			}
+		}
+
+		if p.dryRun {
 			p.logger.Info("Would update record (dry-run)",
 				zap.String("zone", zoneName),
 				zap.String("record", recordName),
 				zap.String("type", change.RecordType),
+				zap.Bool("exists", exists),
 				zap.Any("newRecords", newResourceRecords),
 				zap.Int("ttl", ttl))
 			continue
 		}
 
-		if !p.dryRun {
-			p.logger.Info("Deleting old record for update",
+		if exists {
+			// Атомарная замена набора (PUT): записи ни в какой момент нет «пустой».
+			p.logger.Info("Updating DNS record in place",
 				zap.String("zone", zoneName),
 				zap.String("record", recordName),
-				zap.String("type", change.RecordType))
-
-			err := p.client.DeleteRRSet(ctx, zoneName, recordName, change.RecordType)
-			if err != nil {
-				p.logger.Error("failed to delete old record during update, proceeding to add new",
-					zap.String("record", change.DNSName),
-					zap.Error(err))
+				zap.String("type", change.RecordType),
+				zap.Any("records", newResourceRecords),
+				zap.Any("filters", filters),
+				zap.Int("ttl", ttl))
+			if err := p.client.UpdateRRSet(ctx, zoneName, recordName, change.RecordType, desired); err != nil {
+				return fmt.Errorf("failed to update record %s: %v", change.DNSName, err)
 			}
-
-			if len(newResourceRecords) > 0 {
-				// Check for GeoDNS configuration (only for A/AAAA records)
-				geoConfig := parseGeoDNSConfig(change.ProviderSpecific)
-				var opts []dnssdk.AddZoneOpt
-				if geoConfig != nil && (change.RecordType == "A" || change.RecordType == "AAAA") {
-					var filters []dnssdk.RecordFilter
-					healthcheck := parseHealthcheckConfig(change.ProviderSpecific)
-					newResourceRecords, filters = buildGeoDNSRecords(newResourceRecords, geoConfig, healthcheck, change.RecordType, p.logger)
-					opts = append(opts, dnssdk.WithFilters(filters...))
-					p.logger.Info("Updating GeoDNS record",
-						zap.String("zone", zoneName),
-						zap.String("record", recordName),
-						zap.String("type", change.RecordType),
-						zap.Any("records", newResourceRecords),
-						zap.Any("filters", filters),
-						zap.Int("ttl", ttl))
-				} else {
-					p.logger.Info("Creating new record for update",
-						zap.String("zone", zoneName),
-						zap.String("record", recordName),
-						zap.String("type", change.RecordType),
-						zap.Any("records", newResourceRecords),
-						zap.Int("ttl", ttl))
-				}
-
-				err = p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, newResourceRecords, ttl, opts...)
-				if err != nil {
-					return fmt.Errorf("failed to add new record during update for %s: %v", change.DNSName, err)
-				}
-				p.logger.Info("Successfully updated DNS record by replacing",
-					zap.String("zone", zoneName),
-					zap.String("record", recordName))
+		} else {
+			// Записи нет (удалили руками и т.п.) — создаём.
+			p.logger.Info("Record missing in EdgeCenter, creating for update",
+				zap.String("zone", zoneName),
+				zap.String("record", recordName),
+				zap.String("type", change.RecordType),
+				zap.Int("ttl", ttl))
+			if err := p.client.AddZoneRRSet(ctx, zoneName, recordName, change.RecordType, newResourceRecords, ttl, dnssdk.WithFilters(filters...)); err != nil {
+				return fmt.Errorf("failed to create record during update %s: %v", change.DNSName, err)
 			}
 		}
+		p.logger.Info("Successfully updated DNS record",
+			zap.String("zone", zoneName),
+			zap.String("record", recordName))
 	}
 
 	// Обработка удаления записей
