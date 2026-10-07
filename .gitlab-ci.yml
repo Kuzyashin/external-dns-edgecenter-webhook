@@ -1,6 +1,6 @@
 include:
   - project: 'infrastructure/shared-workflows'
-    ref: v0.0.76
+    ref: master
     file: '/workflows/build/docker-build.yml'
 
 variables:
@@ -8,3 +8,9 @@ variables:
 
 stages:
   - build
+
+docker-build:branch:
+  extends: .docker-build
+
+docker-build:master:
+  extends: .docker-build
